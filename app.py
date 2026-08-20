@@ -1,13 +1,13 @@
-
-
 import streamlit as st
 import pandas as pd
+import json
+import io
 import re
 
-st.set_page_config(page_title="AI GST Filing Assistant & Audit Validator", layout="wide")
-st.title("🛡️ Monthly GST Auto-Filing & 100% Audit Validator")
+st.set_page_config(page_title="AI GST Filing Assistant & Audit Pro", layout="wide", page_icon="🛡️")
+st.title("🛡️ Monthly GST Auto-Filing, Audit & Export Pro")
 
-# Helper function for safe numerical conversions
+# Safe float converter
 def safe_float(val, default=0.0):
     try:
         if pd.isna(val) or str(val).strip() == '':
@@ -16,7 +16,7 @@ def safe_float(val, default=0.0):
     except (ValueError, TypeError):
         return default
 
-# GSTIN 15-character structure validation
+# GSTIN Regex Validator
 def is_valid_gstin(gstin):
     pattern = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
     return bool(re.match(pattern, str(gstin).strip()))
@@ -30,17 +30,19 @@ if uploaded_file:
         st.error(f"❌ File read error: Kripya valid Excel format upload karein. ({e})")
         st.stop()
     
-    # ---------------- 1. SUPPLIER STATE DETECTION ----------------
+    # 1. Supplier State Detection
     supplier_state_code = "24" # Default Gujarat
+    supplier_gstin = "N/A"
     if 'GSTIN' in excel.sheet_names:
         df_gstin = pd.read_excel(uploaded_file, sheet_name='GSTIN', header=None)
         for val in df_gstin.values.flatten():
             val_str = str(val).strip().upper()
             if len(val_str) == 15 and val_str[:2].isdigit():
                 supplier_state_code = val_str[:2]
+                supplier_gstin = val_str
                 break
 
-    # ---------------- 2. HSN SUMMARY EXTRACTION ----------------
+    # 2. HSN Summary Extraction
     hsn_rows = []
     taxable_hsn_sum = 0.0
     igst_hsn_sum = 0.0
@@ -77,7 +79,7 @@ if uploaded_file:
                     "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross Total (₹)": gross
                 })
 
-    # ---------------- 3. B2B EXTRACTION & VALIDATION ----------------
+    # 3. B2B Invoices Extraction
     b2b_list = []
     b2b_taxable_sum = 0.0
     b2b_errors = []
@@ -96,9 +98,8 @@ if uploaded_file:
                 taxable_val = safe_float(r[11])
                 rate = safe_float(r[10])
                 
-                # Check GSTIN Format
                 if not is_valid_gstin(buyer_gstin):
-                    b2b_errors.append(f"Invoice {inv_no}: Invalid GSTIN format '{buyer_gstin}'")
+                    b2b_errors.append(f"Invoice {inv_no}: Invalid GSTIN '{buyer_gstin}'")
                 
                 b2b_taxable_sum += taxable_val
                 b2b_list.append({
@@ -107,7 +108,7 @@ if uploaded_file:
                     "Taxable Value (₹)": taxable_val, "Invoice Value (₹)": inv_val
                 })
 
-    # ---------------- 4. B2C SMALL EXTRACTION & VALIDATION ----------------
+    # 4. B2C Small Extraction
     b2cs_list = []
     b2cs_taxable_sum = 0.0
     
@@ -134,11 +135,10 @@ if uploaded_file:
                         "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst
                     })
 
-    # ---------------- 5. COMPREHENSIVE AUDIT & NOTICE VALIDATION ----------------
+    # 5. Audit Validations
     st.subheader("🔍 Automated GST Audit & Notice Prevention Check")
     audit_passed = True
     
-    # Check 1: HSN vs Outward Sales Reconciliation
     diff = round(abs((b2b_taxable_sum + b2cs_taxable_sum) - taxable_hsn_sum), 2)
     if diff == 0.0:
         st.success("✅ **100% Match:** B2B + B2C Total Sales HSN Table se perfectly match ho rahi hai. (No Mismatch Risk)")
@@ -146,18 +146,14 @@ if uploaded_file:
         audit_passed = False
         st.error(f"⚠️ **Mismatch Alert (Risk of ASMT-10 Notice):** B2B+B2C Total (₹{b2b_taxable_sum + b2cs_taxable_sum:,.2f}) aur HSN Total (₹{taxable_hsn_sum:,.2f}) mein ₹{diff} ka difference hai!")
 
-    # Check 2: B2B Invalids
     if b2b_errors:
         audit_passed = False
         for err in b2b_errors:
-            st.error(f"⚠️ **B2B GSTIN Error:** {err} - GST portal par upload karte waqt error aayega.")
-
-    if audit_passed:
-        st.caption("✨ Sabhi core validations pass ho chuke hain. Aap safely yehi data GSTR-1 aur GSTR-3B mein file kar sakte hain.")
+            st.error(f"⚠️ **B2B GSTIN Error:** {err}")
 
     st.divider()
 
-    # ---------------- 6. SUMMARY METRICS ----------------
+    # 6. Summary KPI Metrics
     total_tax = igst_hsn_sum + cgst_hsn_sum + sgst_hsn_sum
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Taxable Turnover", f"₹{taxable_hsn_sum:,.2f}")
@@ -168,7 +164,7 @@ if uploaded_file:
     st.subheader("GSTR-3B Tax Liability Breakdown")
     st.write(f"👉 **Gross Output Tax in Table 3.1:** ₹{round(total_tax):,}")
 
-    # ---------------- 7. ITC / TCS DEDUCTION CALCULATOR ----------------
+    # 7. ITC / TCS Deduction Calculator
     st.divider()
     st.subheader("💳 Input Tax Credit (ITC) Deduction")
     c1, c2, c3, c4 = st.columns(4)
@@ -190,24 +186,73 @@ if uploaded_file:
 
     st.divider()
 
-    # ---------------- 8. DATA BREAKDOWN TABLES ----------------
+    # 8. Export Center (Download Section)
+    st.subheader("📥 Export & Download Filing Reports")
+    d_col1, d_col2 = st.columns(2)
+
+    # Export Feature 1: Multi-Sheet Excel for CA
+    df_hsn_export = pd.DataFrame(hsn_rows)
+    df_b2b_export = pd.DataFrame(b2b_list)
+    df_b2c_export = pd.DataFrame(b2cs_list)
+
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        if not df_hsn_export.empty:
+            df_hsn_export.to_excel(writer, sheet_name='HSN Summary', index=False)
+        if not df_b2b_export.empty:
+            df_b2b_export.to_excel(writer, sheet_name='B2B Invoices', index=False)
+        if not df_b2c_export.empty:
+            df_b2c_export.to_excel(writer, sheet_name='B2C Small', index=False)
+    
+    with d_col1:
+        st.download_button(
+            label="📊 Download Clean Excel Audit Report (For CA)",
+            data=excel_buffer.getvalue(),
+            file_name="GST_Monthly_Clean_Audit_Report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+    # Export Feature 2: GSTR-1 Portal Compatible JSON
+    portal_json_payload = {
+        "gstin": supplier_gstin,
+        "taxable_turnover": round(taxable_hsn_sum, 2),
+        "total_tax": round(total_tax, 2),
+        "igst": round(igst_hsn_sum, 2),
+        "cgst": round(cgst_hsn_sum, 2),
+        "sgst": round(sgst_hsn_sum, 2),
+        "b2b": b2b_list,
+        "b2cs": b2cs_list,
+        "hsn": hsn_rows
+    }
+    json_bytes = json.dumps(portal_json_payload, indent=4).encode('utf-8')
+
+    with d_col2:
+        st.download_button(
+            label="⚡ Download GSTR-1 Portal JSON (Offline Tool)",
+            data=json_bytes,
+            file_name="GSTR1_Offline_Filing_Data.json",
+            mime="application/json",
+            use_container_width=True
+        )
+
+    st.divider()
+
+    # 9. Data Tables Breakdown
     st.subheader("📋 Sheet Wise Complete Breakdown")
 
-    # 1. HSN Table
     st.write("**1. HSN Summary Data (GSTR-1 Table 12)**")
     if hsn_rows:
         st.dataframe(pd.DataFrame(hsn_rows), use_container_width=True)
     else:
         st.info("HSN summary data nahi mila.")
 
-    # 2. B2B Table
     st.write("**2. B2B Registered Sales (GSTR-1 Table 4A)**")
     if b2b_list:
         st.dataframe(pd.DataFrame(b2b_list), use_container_width=True)
     else:
         st.info("B2B sheet mein koi data nahi mila.")
 
-    # 3. B2C Table
     st.write("**3. B2C State-Wise Sales (GSTR-1 Table 7)**")
     if b2cs_list:
         st.dataframe(pd.DataFrame(b2cs_list), use_container_width=True)
