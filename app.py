@@ -1,15 +1,16 @@
 import streamlit as st
 import pandas as pd
+import json
 
-st.set_page_config(page_title="AI GST Filing Assistant", layout="wide")
-st.title("📊 Monthly GST Auto-Filing Assistant & Breakdown")
+st.set_page_config(page_title="Advance GST Pro Assistant", layout="wide", page_icon="📈")
+st.title("🚀 Advance GST Filing Assistant & Analytics Pro")
 
 uploaded_file = st.file_uploader("Upload Monthly GST Excel File", type=["xlsx", "xls"])
 
 if uploaded_file:
     excel = pd.ExcelFile(uploaded_file)
     
-    # 1. Extract HSN Summary & Tax Computation
+    # 1. HSN Data Extraction
     hsn_records = []
     taxable_total = 0.0
     igst_total = 0.0
@@ -19,14 +20,11 @@ if uploaded_file:
     
     if 'HSN Summary' in excel.sheet_names:
         df_hsn = pd.read_excel(uploaded_file, sheet_name='HSN Summary', header=None)
-        hsn_rows = df_hsn.values[4:]
-        
-        for r in hsn_rows:
+        for r in df_hsn.values[4:]:
             if pd.notna(r[0]) and str(r[0]).strip() != '':
                 hsn_code = str(r[0])
                 uqc = str(r[2]) if pd.notna(r[2]) else "PCS"
                 qty = float(r[3]) if pd.notna(r[3]) else 0
-                rate = f"{float(r[4])*100:.0f}%" if pd.notna(r[4]) else "0%"
                 gross = float(r[5]) if pd.notna(r[5]) else 0.0
                 taxable = float(r[6]) if pd.notna(r[6]) else 0.0
                 igst = float(r[7]) if pd.notna(r[7]) else 0.0
@@ -40,30 +38,24 @@ if uploaded_file:
                 gross_total += gross
                 
                 hsn_records.append({
-                    "HSN Code": hsn_code,
-                    "UQC": uqc,
-                    "Total Quantity": qty,
-                    "GST Rate": rate,
-                    "Taxable Value (₹)": f"₹{taxable:,.2f}",
-                    "IGST (₹)": f"₹{igst:,.2f}",
-                    "CGST (₹)": f"₹{cgst:,.2f}",
-                    "SGST (₹)": f"₹{sgst:,.2f}",
-                    "Gross Total (₹)": f"₹{gross:,.2f}"
+                    "HSN Code": hsn_code, "UQC": uqc, "Qty": qty,
+                    "Taxable (₹)": taxable, "IGST (₹)": igst,
+                    "CGST (₹)": cgst, "SGST (₹)": sgst, "Total (₹)": gross
                 })
 
     total_output_tax = igst_total + cgst_total + sgst_total
 
     # 2. Top Summary KPI Cards
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Gross Sales", f"₹{gross_total:,.2f}")
-    col2.metric("Taxable Turnover", f"₹{taxable_total:,.2f}")
-    col3.metric("Total Output GST", f"₹{total_output_tax:,.2f}")
-    col4.metric("IGST", f"₹{igst_total:,.2f}")
-    col5.metric("CGST + SGST", f"₹{(cgst_total + sgst_total):,.2f}")
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    kpi1.metric("Gross Sales", f"₹{gross_total:,.2f}")
+    kpi2.metric("Taxable Sales", f"₹{taxable_total:,.2f}")
+    kpi3.metric("Total GST Liability", f"₹{total_output_tax:,.2f}")
+    kpi4.metric("IGST", f"₹{igst_total:,.2f}")
+    kpi5.metric("CGST + SGST", f"₹{(cgst_total + sgst_total):,.2f}")
     
     st.divider()
 
-    # 3. GSTR-3B Cash Calculator with ITC / TCS
+    # 3. ITC, TCS & Cash Tax Computation
     st.subheader("💳 GSTR-3B Net Cash Liability Calculator")
     c_itc1, c_itc2, c_itc3, c_tcs = st.columns(4)
     with c_itc1:
@@ -80,67 +72,100 @@ if uploaded_file:
     net_sgst_cash = max(0.0, sgst_total - itc_sgst)
     net_total_cash = max(0.0, (net_igst_cash + net_cgst_cash + net_sgst_cash) - tcs_credit)
 
-    st.success(f"👉 **Total Cash Tax to Pay in GSTR-3B:** ₹{round(net_total_cash):,}  *(IGST: ₹{net_igst_cash:,.2f} | CGST: ₹{net_cgst_cash:,.2f} | SGST: ₹{net_sgst_cash:,.2f})*")
+    st.success(f"👉 **Total Cash Challan Amount for GSTR-3B:** ₹{round(net_total_cash):,}  (IGST: ₹{net_igst_cash:,.2f} | CGST: ₹{net_cgst_cash:,.2f} | SGST: ₹{net_sgst_cash:,.2f})")
 
     st.divider()
 
-    # 4. Detailed Data Breakdown Tabs
-    tab1, tab2, tab3 = st.tabs(["📦 HSN Product Breakdown", "🏬 B2B Invoices (Table 4A)", "🛒 B2C Small Sales (Table 7)"])
+    # 4. Feature Tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 State Sales Analytics", 
+        "📝 GSTR-3B Form Copy-Paste", 
+        "💾 Portal JSON Export",
+        "📦 HSN Product Breakdown", 
+        "🏬 B2B & B2C Invoices"
+    ])
+
+    # B2C Data Preparation
+    b2cs_records = []
+    if 'B2C Small' in excel.sheet_names:
+        df_b2cs = pd.read_excel(uploaded_file, sheet_name='B2C Small', header=None)
+        for r in df_b2cs.values[4:]:
+            if pd.notna(r[1]) and pd.notna(r[4]) and float(r[4]) > 0:
+                pos = str(r[1])
+                rate = float(r[3]) if pd.notna(r[3]) else 0.05
+                taxable = float(r[4])
+                is_intra = pos.startswith('24') # Gujarat
+                b2cs_records.append({
+                    "State": pos,
+                    "Taxable Value": taxable,
+                    "IGST": 0.0 if is_intra else taxable * rate,
+                    "CGST": (taxable * rate / 2) if is_intra else 0.0,
+                    "SGST": (taxable * rate / 2) if is_intra else 0.0
+                })
+    df_b2c_clean = pd.DataFrame(b2cs_records)
 
     with tab1:
-        st.subheader("HSN Wise Summary (GSTR-1 Table 12)")
-        if hsn_records:
-            st.dataframe(pd.DataFrame(hsn_records), use_container_width=True)
+        st.subheader("📍 State-Wise Sales Breakdown & Trend")
+        if not df_b2c_clean.empty:
+            chart_data = df_b2c_clean.set_index('State')['Taxable Value']
+            st.bar_chart(chart_data)
+            st.dataframe(df_b2c_clean, use_container_width=True)
         else:
-            st.info("Koi HSN data nahi mila.")
+            st.info("State sales data not available.")
 
     with tab2:
-        st.subheader("B2B Registered Invoices (GSTR-1 Table 4A)")
+        st.subheader("📋 Direct GSTR-3B Portal Form Mapping")
+        st.caption("GST portal khol kar exact Table 3.1 mein yeh values enter karein:")
+        
+        gstr3b_mapping = [
+            {"Table Number": "3.1 (a) Outward Taxable Supplies", "Taxable (₹)": f"₹{taxable_total:,.2f}", "IGST (₹)": f"₹{igst_total:,.2f}", "CGST (₹)": f"₹{cgst_total:,.2f}", "SGST (₹)": f"₹{sgst_total:,.2f}"},
+            {"Table Number": "4 (A)(5) All Other Eligible ITC", "Taxable (₹)": "-", "IGST (₹)": f"₹{itc_igst:,.2f}", "CGST (₹)": f"₹{itc_cgst:,.2f}", "SGST (₹)": f"₹{itc_sgst:,.2f}"},
+            {"Table Number": "6.1 Net Payment in Cash", "Taxable (₹)": "-", "IGST (₹)": f"₹{net_igst_cash:,.2f}", "CGST (₹)": f"₹{net_cgst_cash:,.2f}", "SGST (₹)": f"₹{net_sgst_cash:,.2f}"}
+        ]
+        st.table(pd.DataFrame(gstr3b_mapping))
+
+    with tab3:
+        st.subheader("⚡ Download Portal Uploadable JSON")
+        st.caption("Yeh JSON file GSTR-1 offline tool mein directly import ki ja sakti hai.")
+        
+        portal_json = {
+            "version": "GSTR1_v2.0",
+            "cur_gt": round(gross_total, 2),
+            "cur_txval": round(taxable_total, 2),
+            "tax_details": {
+                "igst": round(igst_total, 2),
+                "cgst": round(cgst_total, 2),
+                "sgst": round(sgst_total, 2),
+                "total_tax": round(total_output_tax, 2)
+            },
+            "b2cs": b2cs_records,
+            "hsn": hsn_records
+        }
+        json_str = json.dumps(portal_json, indent=4)
+        st.download_button(
+            label="📥 Download GSTR-1 JSON File",
+            data=json_str,
+            file_name="GSTR1_Monthly_Data.json",
+            mime="application/json"
+        )
+
+    with tab4:
+        st.subheader("HSN Summary (Table 12)")
+        if hsn_records:
+            st.dataframe(pd.DataFrame(hsn_records), use_container_width=True)
+
+    with tab5:
+        st.subheader("B2B Registered Invoices (Table 4A)")
         b2b_records = []
         if 'B2B' in excel.sheet_names:
             df_b2b = pd.read_excel(uploaded_file, sheet_name='B2B', header=None)
             for r in df_b2b.values[4:]:
                 if pd.notna(r[0]) and str(r[0]).strip() != '':
                     b2b_records.append({
-                        "Recipient GSTIN": str(r[0]),
-                        "Invoice No": str(r[2]),
-                        "Invoice Date": str(r[3]),
-                        "Place of Supply": str(r[5]),
-                        "GST Rate": f"{float(r[10])*100:.0f}%" if pd.notna(r[10]) else "0%",
-                        "Taxable Value (₹)": f"₹{float(r[11]):,.2f}" if pd.notna(r[11]) else "₹0.00",
-                        "Invoice Value (₹)": f"₹{float(r[4]):,.2f}" if pd.notna(r[4]) else "₹0.00"
+                        "GSTIN": str(r[0]), "Invoice No": str(r[2]), "Date": str(r[3]),
+                        "Place of Supply": str(r[5]), "Taxable (₹)": float(r[11]), "Invoice Value (₹)": float(r[4])
                     })
         if b2b_records:
             st.dataframe(pd.DataFrame(b2b_records), use_container_width=True)
         else:
-            st.info("Koi B2B invoices nahi hain.")
-
-    with tab3:
-        st.subheader("B2C State-Wise Small Sales (GSTR-1 Table 7)")
-        b2cs_records = []
-        if 'B2C Small' in excel.sheet_names:
-            df_b2cs = pd.read_excel(uploaded_file, sheet_name='B2C Small', header=None)
-            for r in df_b2cs.values[4:]:
-                if pd.notna(r[1]) and pd.notna(r[4]) and float(r[4]) > 0:
-                    pos = str(r[1])
-                    rate = float(r[3]) if pd.notna(r[3]) else 0.05
-                    taxable = float(r[4])
-                    
-                    # Inter vs Intra tax calculation
-                    is_intra = pos.startswith('24') # Gujarat
-                    igst = 0.0 if is_intra else taxable * rate
-                    cgst = (taxable * rate / 2) if is_intra else 0.0
-                    sgst = (taxable * rate / 2) if is_intra else 0.0
-
-                    b2cs_records.append({
-                        "Place of Supply": pos,
-                        "Rate": f"{rate*100:.0f}%",
-                        "Taxable Value (₹)": f"₹{taxable:,.2f}",
-                        "IGST (₹)": f"₹{igst:,.2f}",
-                        "CGST (₹)": f"₹{cgst:,.2f}",
-                        "SGST (₹)": f"₹{sgst:,.2f}"
-                    })
-        if b2cs_records:
-            st.dataframe(pd.DataFrame(b2cs_records), use_container_width=True)
-        else:
-            st.info("Koi B2C Small data nahi mila.")
+            st.info("No B2B invoices found.")
