@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import json
@@ -82,6 +83,7 @@ if uploaded_file:
     # 3. B2B Invoices Extraction
     b2b_list = []
     b2b_taxable_sum = 0.0
+    b2b_gross_sum = 0.0
     b2b_errors = []
     
     if 'B2B' in excel.sheet_names:
@@ -102,15 +104,17 @@ if uploaded_file:
                     b2b_errors.append(f"Invoice {inv_no}: Invalid GSTIN '{buyer_gstin}'")
                 
                 b2b_taxable_sum += taxable_val
+                b2b_gross_sum += inv_val
                 b2b_list.append({
                     "Buyer GSTIN": buyer_gstin, "Invoice No": inv_no, "Date": inv_date,
                     "Place of Supply": pos, "Rate": f"{rate*100:.0f}%",
-                    "Taxable Value (₹)": taxable_val, "Invoice Value (₹)": inv_val
+                    "Taxable Value (₹)": taxable_val, "Gross / Invoice Value (₹)": inv_val
                 })
 
     # 4. B2C Small Extraction
     b2cs_list = []
     b2cs_taxable_sum = 0.0
+    b2cs_gross_sum = 0.0
     
     if 'B2C Small' in excel.sheet_names:
         df_b2cs = pd.read_excel(uploaded_file, sheet_name='B2C Small', header=None)
@@ -127,12 +131,15 @@ if uploaded_file:
                     igst = 0.0 if is_intra else round(taxable_val * rate, 2)
                     cgst = round((taxable_val * rate) / 2, 2) if is_intra else 0.0
                     sgst = round((taxable_val * rate) / 2, 2) if is_intra else 0.0
+                    gross_val = round(taxable_val + igst + cgst + sgst, 2)
                     
                     b2cs_taxable_sum += taxable_val
+                    b2cs_gross_sum += gross_val
                     b2cs_list.append({
                         "Place of Supply": pos, "Rate": f"{rate*100:.0f}%",
                         "Taxable Value (₹)": taxable_val,
-                        "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst
+                        "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst,
+                        "Gross Value (₹)": gross_val
                     })
 
     # 5. Audit Validations
@@ -153,13 +160,14 @@ if uploaded_file:
 
     st.divider()
 
-    # 6. Summary KPI Metrics
+    # 6. Summary KPI Metrics (Including Gross Sales)
     total_tax = igst_hsn_sum + cgst_hsn_sum + sgst_hsn_sum
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Taxable Turnover", f"₹{taxable_hsn_sum:,.2f}")
-    col2.metric("Total Output GST", f"₹{total_tax:,.2f}")
-    col3.metric("IGST", f"₹{igst_hsn_sum:,.2f}")
-    col4.metric("CGST + SGST", f"₹{(cgst_hsn_sum + sgst_hsn_sum):,.2f}")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Gross Sales (Turnover)", f"₹{gross_hsn_sum:,.2f}")
+    col2.metric("Taxable Turnover", f"₹{taxable_hsn_sum:,.2f}")
+    col3.metric("Total Output GST", f"₹{total_tax:,.2f}")
+    col4.metric("IGST", f"₹{igst_hsn_sum:,.2f}")
+    col5.metric("CGST + SGST", f"₹{(cgst_hsn_sum + sgst_hsn_sum):,.2f}")
     
     st.subheader("GSTR-3B Tax Liability Breakdown")
     st.write(f"👉 **Gross Output Tax in Table 3.1:** ₹{round(total_tax):,}")
@@ -216,6 +224,7 @@ if uploaded_file:
     # Export Feature 2: GSTR-1 Portal Compatible JSON
     portal_json_payload = {
         "gstin": supplier_gstin,
+        "gross_turnover": round(gross_hsn_sum, 2),
         "taxable_turnover": round(taxable_hsn_sum, 2),
         "total_tax": round(total_tax, 2),
         "igst": round(igst_hsn_sum, 2),
