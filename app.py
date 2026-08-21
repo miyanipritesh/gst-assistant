@@ -6,7 +6,7 @@ import re
 
 st.set_page_config(page_title="Multi-Platform GST Auto-Filer Pro", layout="wide", page_icon="🛍️")
 st.title("🛍️ Multi-Platform E-Commerce GST Auto-Filer & Analytics")
-st.caption("Amazon aur Flipkart dono ki monthly GSTR-1 Excel files upload karein.")
+st.caption("Amazon, Flipkart aur Meesho ki monthly GSTR-1 Excel files upload karein. Platform automatically detect ho jayega.")
 
 def safe_float(val, default=0.0):
     try:
@@ -19,6 +19,28 @@ def safe_float(val, default=0.0):
 def is_valid_gstin(gstin):
     pattern = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
     return bool(re.match(pattern, str(gstin).strip()))
+
+# --- AUTO DETECTOR ---
+def detect_ecommerce_platform(file_bytes):
+    try:
+        excel = pd.ExcelFile(file_bytes)
+        sheets = [s.strip().lower() for s in excel.sheet_names]
+        
+        # 1. Flipkart Signature
+        if any('section 7(a)' in s or 'section 12 in gstr-1' in s or 'section 7(b)' in s or 'section 3 in gstr-8' in s for s in sheets):
+            return "Flipkart", "🟦 Flipkart"
+            
+        # 2. Meesho Signature
+        if any('forward' in s or 'reverse' in s or 'meesho' in s or 'b2c_supplies' in s or 'tcs_details' in s or 'b2c supplies' in s for s in sheets):
+            return "Meesho", "🟪 Meesho"
+            
+        # 3. Amazon Signature
+        if any('b2c small' in s or 'hsn summary' in s or 'b2cl cn' in s for s in sheets):
+            return "Amazon", "🟧 Amazon"
+            
+        return "Unknown", "⚪ Unknown Platform"
+    except Exception:
+        return "Unknown", "⚪ Unknown Platform"
 
 # --- PARSER 1: AMAZON ---
 def parse_amazon(file_bytes):
@@ -165,23 +187,106 @@ def parse_flipkart(file_bytes):
         "hsn": hsn_records, "b2cs": b2cs_records, "b2b": []
     }
 
-# File Uploader
-uploaded_files = st.file_uploader("Upload GST Excel Files (Amazon & Flipkart)", type=["xlsx", "xls"], accept_multiple_files=True)
+# --- PARSER 3: MEESHO ---
+def parse_meesho(file_bytes):
+    excel = pd.ExcelFile(file_bytes)
+    hsn_records, b2cs_records, b2b_records = [], [], []
+    taxable_sum, igst_sum, cgst_sum, sgst_sum, gross_sum = 0.0, 0.0, 0.0, 0.0, 0.0
+    supplier_gstin = "24ECEPM6676L1Z0"
+    supplier_state = "24"
+
+    # Reading forward/b2c sheets in Meesho reports
+    for s in excel.sheet_names:
+        s_low = s.lower()
+        if 'forward' in s_low or 'b2c' in s_low or 'sales' in s_low or 'gstr' in s_low:
+            df = pd.read_excel(file_bytes, sheet_name=s)
+            
+            # Normalize column names
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            
+            for _, r in df.iterrows():
+                # Identify columns flexibly
+                taxable = 0.0
+                for col in df.columns:
+                    if 'taxable' in col:
+                        taxable = safe_float(r[col])
+                        break
+                
+                pos = "Other"
+                for col in df.columns:
+                    if 'state' in col or 'pos' in col or 'place of supply' in col:
+                        pos = str(r[col]).strip()
+                        break
+                
+                hsn = "9999"
+                for col in df.columns:
+                    if 'hsn' in col:
+                        hsn = str(r[col]).strip()
+                        break
+                        
+                rate = 0.05
+                for col in df.columns:
+                    if 'rate' in col or 'gst %' in col:
+                        rate = safe_float(r[col])
+                        if rate > 1:
+                            rate = rate / 100.0
+                        break
+
+                if taxable != 0:
+                    is_intra = pos.startswith(supplier_state) or 'gujarat' in pos.lower()
+                    igst = 0.0 if is_intra else round(taxable * rate, 2)
+                    cgst = round((taxable * rate) / 2, 2) if is_intra else 0.0
+                    sgst = round((taxable * rate) / 2, 2) if is_intra else 0.0
+                    gross = round(taxable + igst + cgst + sgst, 2)
+
+                    taxable_sum += taxable
+                    igst_sum += igst
+                    cgst_sum += cgst
+                    sgst_sum += sgst
+                    gross_sum += gross
+
+                    b2cs_records.append({
+                        "Platform": "Meesho", "Place of Supply": pos, "Rate": f"{rate*100:.0f}%",
+                        "Taxable Value (₹)": taxable, "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst,
+                        "Gross Value (₹)": gross
+                    })
+                    
+                    hsn_records.append({
+                        "Platform": "Meesho", "HSN Code": hsn, "UQC": "PCS",
+                        "Qty": 1.0, "GST Rate": f"{rate*100:.0f}%", "Taxable (₹)": taxable,
+                        "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross Total (₹)": gross
+                    })
+
+    tcs_val = round(taxable_sum * 0.005, 2)
+    return {
+        "platform": "Meesho", "supplier_gstin": supplier_gstin,
+        "gross": gross_sum, "taxable": taxable_sum,
+        "igst": igst_sum, "cgst": cgst_sum, "sgst": sgst_sum,
+        "total_tax": igst_sum + cgst_sum + sgst_sum,
+        "tcs": tcs_val, "hsn": hsn_records, "b2cs": b2cs_records, "b2b": []
+    }
+
+# --- FILE UPLOADER & AUTO-DISPATCH ---
+uploaded_files = st.file_uploader("Upload GST Excel Files (Amazon, Flipkart & Meesho)", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
 
 if uploaded_files:
     platform_results = []
     
+    st.subheader("🔍 Auto-Detected Platform Files")
     for uploaded_file in uploaded_files:
+        p_id, p_badge = detect_ecommerce_platform(uploaded_file)
+        st.success(f"📁 **File:** `{uploaded_file.name}` ➔ **Identified Platform:** **{p_badge}**")
+        
         try:
-            excel = pd.ExcelFile(uploaded_file)
-            sheets = excel.sheet_names
-            if any('Section 7(A)(2)' in s or 'Section 12' in s for s in sheets):
+            if p_id == "Flipkart":
                 res = parse_flipkart(uploaded_file)
+            elif p_id == "Meesho":
+                res = parse_meesho(uploaded_file)
             else:
                 res = parse_amazon(uploaded_file)
             platform_results.append(res)
         except Exception as e:
-            st.error(f"Error processing {uploaded_file.name}: {e}")
+            st.error(f"Error parsing {uploaded_file.name}: {e}")
 
     # Combine Data
     combined_gross = sum(p['gross'] for p in platform_results)
@@ -195,6 +300,8 @@ if uploaded_files:
     all_hsn = [item for p in platform_results for item in p['hsn']]
     all_b2cs = [item for p in platform_results for item in p['b2cs']]
     all_b2b = [item for p in platform_results for item in p['b2b']]
+
+    st.divider()
 
     # 1. Platform Comparison Table
     st.subheader("📊 Platform-Wise Sales & Tax Summary")
@@ -289,7 +396,7 @@ if uploaded_files:
     # --- TAB 1: HSN SUMMARY ---
     with main_tab1:
         st.write("### HSN Wise Breakdown")
-        hsn_sub_tabs = st.tabs(["🌐 Combined HSN", "🟧 Amazon HSN", "🟦 Flipkart HSN"])
+        hsn_sub_tabs = st.tabs(["🌐 Combined HSN", "🟧 Amazon HSN", "🟦 Flipkart HSN", "🟪 Meesho HSN"])
         
         with hsn_sub_tabs[0]:
             st.caption("All Platforms Consolidated HSN Data:")
@@ -297,24 +404,20 @@ if uploaded_files:
             
         with hsn_sub_tabs[1]:
             amz_hsn = [x for x in all_hsn if x.get("Platform") == "Amazon"]
-            if amz_hsn:
-                st.caption("Amazon Only HSN Data:")
-                st.dataframe(pd.DataFrame(amz_hsn), use_container_width=True)
-            else:
-                st.info("Amazon HSN data nahi mila.")
+            st.dataframe(pd.DataFrame(amz_hsn) if amz_hsn else pd.DataFrame(), use_container_width=True)
                 
         with hsn_sub_tabs[2]:
             fk_hsn = [x for x in all_hsn if x.get("Platform") == "Flipkart"]
-            if fk_hsn:
-                st.caption("Flipkart Only HSN Data:")
-                st.dataframe(pd.DataFrame(fk_hsn), use_container_width=True)
-            else:
-                st.info("Flipkart HSN data nahi mila.")
+            st.dataframe(pd.DataFrame(fk_hsn) if fk_hsn else pd.DataFrame(), use_container_width=True)
+
+        with hsn_sub_tabs[3]:
+            meesho_hsn = [x for x in all_hsn if x.get("Platform") == "Meesho"]
+            st.dataframe(pd.DataFrame(meesho_hsn) if meesho_hsn else pd.DataFrame(), use_container_width=True)
 
     # --- TAB 2: B2C STATE-WISE ---
     with main_tab2:
         st.write("### B2C State-Wise Sales Breakdown")
-        b2c_sub_tabs = st.tabs(["🌐 Combined B2C", "🟧 Amazon B2C", "🟦 Flipkart B2C"])
+        b2c_sub_tabs = st.tabs(["🌐 Combined B2C", "🟧 Amazon B2C", "🟦 Flipkart B2C", "🟪 Meesho B2C"])
         
         with b2c_sub_tabs[0]:
             st.caption("All Platforms Consolidated B2C Sales:")
@@ -322,24 +425,20 @@ if uploaded_files:
             
         with b2c_sub_tabs[1]:
             amz_b2cs = [x for x in all_b2cs if x.get("Platform") == "Amazon"]
-            if amz_b2cs:
-                st.caption("Amazon Only B2C Sales:")
-                st.dataframe(pd.DataFrame(amz_b2cs), use_container_width=True)
-            else:
-                st.info("Amazon B2C data nahi mila.")
+            st.dataframe(pd.DataFrame(amz_b2cs) if amz_b2cs else pd.DataFrame(), use_container_width=True)
                 
         with b2c_sub_tabs[2]:
             fk_b2cs = [x for x in all_b2cs if x.get("Platform") == "Flipkart"]
-            if fk_b2cs:
-                st.caption("Flipkart Only B2C Sales:")
-                st.dataframe(pd.DataFrame(fk_b2cs), use_container_width=True)
-            else:
-                st.info("Flipkart B2C data nahi mila.")
+            st.dataframe(pd.DataFrame(fk_b2cs) if fk_b2cs else pd.DataFrame(), use_container_width=True)
+
+        with b2c_sub_tabs[3]:
+            meesho_b2cs = [x for x in all_b2cs if x.get("Platform") == "Meesho"]
+            st.dataframe(pd.DataFrame(meesho_b2cs) if meesho_b2cs else pd.DataFrame(), use_container_width=True)
 
     # --- TAB 3: B2B INVOICES ---
     with main_tab3:
         st.write("### B2B Registered Invoices")
-        b2b_sub_tabs = st.tabs(["🌐 Combined B2B", "🟧 Amazon B2B", "🟦 Flipkart B2B"])
+        b2b_sub_tabs = st.tabs(["🌐 Combined B2B", "🟧 Amazon B2B", "🟦 Flipkart B2B", "🟪 Meesho B2B"])
         
         with b2b_sub_tabs[0]:
             if all_b2b:
@@ -350,16 +449,12 @@ if uploaded_files:
                 
         with b2b_sub_tabs[1]:
             amz_b2b = [x for x in all_b2b if x.get("Platform") == "Amazon"]
-            if amz_b2b:
-                st.caption("Amazon Only B2B Invoices:")
-                st.dataframe(pd.DataFrame(amz_b2b), use_container_width=True)
-            else:
-                st.info("Amazon par koi B2B invoice nahi hai.")
+            st.dataframe(pd.DataFrame(amz_b2b) if amz_b2b else pd.DataFrame(), use_container_width=True)
                 
         with b2b_sub_tabs[2]:
             fk_b2b = [x for x in all_b2b if x.get("Platform") == "Flipkart"]
-            if fk_b2b:
-                st.caption("Flipkart Only B2B Invoices:")
-                st.dataframe(pd.DataFrame(fk_b2b), use_container_width=True)
-            else:
-                st.info("Flipkart par koi B2B invoice nahi hai.")
+            st.dataframe(pd.DataFrame(fk_b2b) if fk_b2b else pd.DataFrame(), use_container_width=True)
+
+        with b2b_sub_tabs[3]:
+            meesho_b2b = [x for x in all_b2b if x.get("Platform") == "Meesho"]
+            st.dataframe(pd.DataFrame(meesho_b2b) if meesho_b2b else pd.DataFrame(), use_container_width=True)
