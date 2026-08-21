@@ -6,7 +6,7 @@ import re
 
 st.set_page_config(page_title="Multi-Platform GST Auto-Filer Pro", layout="wide", page_icon="🛍️")
 st.title("🛍️ Multi-Platform E-Commerce GST Auto-Filer & Analytics")
-st.caption("Amazon aur Flipkart dono ki monthly GSTR-1 Excel files ek saath ya alag-alag upload karein.")
+st.caption("Amazon aur Flipkart dono ki monthly GSTR-1 Excel files upload karein.")
 
 def safe_float(val, default=0.0):
     try:
@@ -57,7 +57,7 @@ def parse_amazon(file_bytes):
                 hsn_records.append({
                     "Platform": "Amazon", "HSN Code": str(r[0]).strip(), "UQC": str(r[2]).strip() if pd.notna(r[2]) else "PCS",
                     "Qty": qty, "GST Rate": f"{safe_float(r[4])*100:.0f}%", "Taxable (₹)": taxable,
-                    "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross (₹)": gross
+                    "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross Total (₹)": gross
                 })
 
     if 'B2C Small' in excel.sheet_names:
@@ -92,7 +92,7 @@ def parse_amazon(file_bytes):
         "gross": gross_sum, "taxable": taxable_sum,
         "igst": igst_sum, "cgst": cgst_sum, "sgst": sgst_sum,
         "total_tax": igst_sum + cgst_sum + sgst_sum,
-        "tcs": round(taxable_sum * 0.005, 2), # Amazon 0.5% net TCS
+        "tcs": round(taxable_sum * 0.005, 2),
         "hsn": hsn_records, "b2cs": b2cs_records, "b2b": b2b_records
     }
 
@@ -122,10 +122,9 @@ def parse_flipkart(file_bytes):
             hsn_records.append({
                 "Platform": "Flipkart", "HSN Code": str(r.get('HSN Number', '')).strip(), "UQC": "NOS",
                 "Qty": qty, "GST Rate": "5%", "Taxable (₹)": taxable,
-                "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross (₹)": gross
+                "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross Total (₹)": gross
             })
 
-    # Flipkart Intra-State (7A)
     if 'Section 7(A)(2) in GSTR-1' in excel.sheet_names:
         df_7a = pd.read_excel(file_bytes, sheet_name='Section 7(A)(2) in GSTR-1')
         for _, r in df_7a.iterrows():
@@ -139,7 +138,6 @@ def parse_flipkart(file_bytes):
                     "Gross Value (₹)": round(taxable + cgst + sgst, 2)
                 })
 
-    # Flipkart Inter-State (7B)
     if 'Section 7(B)(2) in GSTR-1' in excel.sheet_names:
         df_7b = pd.read_excel(file_bytes, sheet_name='Section 7(B)(2) in GSTR-1')
         for _, r in df_7b.iterrows():
@@ -153,7 +151,6 @@ def parse_flipkart(file_bytes):
                     "Gross Value (₹)": round(taxable + igst, 2)
                 })
 
-    # TCS from GSTR-8
     tcs_total = 0.0
     if 'Section 3 in GSTR-8' in excel.sheet_names:
         df_tcs = pd.read_excel(file_bytes, sheet_name='Section 3 in GSTR-8')
@@ -168,7 +165,7 @@ def parse_flipkart(file_bytes):
         "hsn": hsn_records, "b2cs": b2cs_records, "b2b": []
     }
 
-# Multi-file Uploader
+# File Uploader
 uploaded_files = st.file_uploader("Upload GST Excel Files (Amazon & Flipkart)", type=["xlsx", "xls"], accept_multiple_files=True)
 
 if uploaded_files:
@@ -186,7 +183,7 @@ if uploaded_files:
         except Exception as e:
             st.error(f"Error processing {uploaded_file.name}: {e}")
 
-    # Combine All Platform Data
+    # Combine Data
     combined_gross = sum(p['gross'] for p in platform_results)
     combined_taxable = sum(p['taxable'] for p in platform_results)
     combined_igst = sum(p['igst'] for p in platform_results)
@@ -200,7 +197,7 @@ if uploaded_files:
     all_b2b = [item for p in platform_results for item in p['b2b']]
 
     # 1. Platform Comparison Table
-    st.subheader("📊 Platform-Wise Sales & Tax Comparison")
+    st.subheader("📊 Platform-Wise Sales & Tax Summary")
     comp_data = []
     for p in platform_results:
         comp_data.append({
@@ -218,7 +215,7 @@ if uploaded_files:
     st.divider()
 
     # 2. Consolidated KPI Cards
-    st.subheader("🌐 Combined Total Tax Liability (All Platforms Consolidated)")
+    st.subheader("🌐 Combined Total Tax Liability (All Platforms)")
     kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
     kpi1.metric("Total Gross Sales", f"₹{combined_gross:,.2f}")
     kpi2.metric("Total Taxable Sales", f"₹{combined_taxable:,.2f}")
@@ -226,7 +223,7 @@ if uploaded_files:
     kpi4.metric("Total IGST", f"₹{combined_igst:,.2f}")
     kpi5.metric("Total CGST + SGST", f"₹{(combined_cgst + combined_sgst):,.2f}")
 
-    # 3. GSTR-3B Cash Calculator with Combined ITC & TCS
+    # 3. GSTR-3B Cash Calculator
     st.divider()
     st.subheader("💳 GSTR-3B Final Cash Payment Calculator")
     c1, c2, c3, c4 = st.columns(4)
@@ -248,8 +245,8 @@ if uploaded_files:
 
     st.divider()
 
-    # 4. GSTR-3B Portal Direct Table
-    st.subheader("📋 Direct GSTR-3B Form Mapping (Combined)")
+    # 4. GSTR-3B Form Mapping
+    st.subheader("📋 Direct GSTR-3B Portal Form Mapping")
     gstr3b_table = [
         {"GST Portal Section": "Table 3.1(a) Outward Taxable Supplies", "Taxable Value (₹)": f"₹{combined_taxable:,.2f}", "IGST (₹)": f"₹{combined_igst:,.2f}", "CGST (₹)": f"₹{combined_cgst:,.2f}", "SGST (₹)": f"₹{combined_sgst:,.2f}"},
         {"GST Portal Section": "Table 4(A)(5) All Other Eligible ITC", "Taxable Value (₹)": "-", "IGST (₹)": f"₹{itc_igst:,.2f}", "CGST (₹)": f"₹{itc_cgst:,.2f}", "SGST (₹)": f"₹{itc_sgst:,.2f}"},
@@ -260,7 +257,7 @@ if uploaded_files:
     st.divider()
 
     # 5. Export Downloads
-    st.subheader("📥 Export Combined Reports")
+    st.subheader("📥 Export Combined & Platform Reports")
     d1, d2 = st.columns(2)
     
     excel_buf = io.BytesIO()
@@ -285,14 +282,84 @@ if uploaded_files:
 
     st.divider()
 
-    # 6. Detailed Tables
-    t1, t2, t3 = st.tabs(["📦 Combined HSN Summary", "🛒 Combined B2C State-Wise Sales", "🏬 B2B Invoices"])
-    with t1:
-        st.dataframe(pd.DataFrame(all_hsn), use_container_width=True)
-    with t2:
-        st.dataframe(pd.DataFrame(all_b2cs), use_container_width=True)
-    with t3:
-        if all_b2b:
-            st.dataframe(pd.DataFrame(all_b2b), use_container_width=True)
-        else:
-            st.info("Koi B2B invoices nahi hain.")
+    # 6. PLATFORM-WISE DETAILED BREAKDOWN TABS
+    st.subheader("📋 Platform-Wise & Combined Detailed Data Breakdown")
+    main_tab1, main_tab2, main_tab3 = st.tabs(["📦 HSN Summary", "🛒 B2C State-Wise Sales", "🏬 B2B Invoices"])
+
+    # --- TAB 1: HSN SUMMARY ---
+    with main_tab1:
+        st.write("### HSN Wise Breakdown")
+        hsn_sub_tabs = st.tabs(["🌐 Combined HSN", "🟧 Amazon HSN", "🟦 Flipkart HSN"])
+        
+        with hsn_sub_tabs[0]:
+            st.caption("All Platforms Consolidated HSN Data:")
+            st.dataframe(pd.DataFrame(all_hsn), use_container_width=True)
+            
+        with hsn_sub_tabs[1]:
+            amz_hsn = [x for x in all_hsn if x.get("Platform") == "Amazon"]
+            if amz_hsn:
+                st.caption("Amazon Only HSN Data:")
+                st.dataframe(pd.DataFrame(amz_hsn), use_container_width=True)
+            else:
+                st.info("Amazon HSN data nahi mila.")
+                
+        with hsn_sub_tabs[2]:
+            fk_hsn = [x for x in all_hsn if x.get("Platform") == "Flipkart"]
+            if fk_hsn:
+                st.caption("Flipkart Only HSN Data:")
+                st.dataframe(pd.DataFrame(fk_hsn), use_container_width=True)
+            else:
+                st.info("Flipkart HSN data nahi mila.")
+
+    # --- TAB 2: B2C STATE-WISE ---
+    with main_tab2:
+        st.write("### B2C State-Wise Sales Breakdown")
+        b2c_sub_tabs = st.tabs(["🌐 Combined B2C", "🟧 Amazon B2C", "🟦 Flipkart B2C"])
+        
+        with b2c_sub_tabs[0]:
+            st.caption("All Platforms Consolidated B2C Sales:")
+            st.dataframe(pd.DataFrame(all_b2cs), use_container_width=True)
+            
+        with b2c_sub_tabs[1]:
+            amz_b2cs = [x for x in all_b2cs if x.get("Platform") == "Amazon"]
+            if amz_b2cs:
+                st.caption("Amazon Only B2C Sales:")
+                st.dataframe(pd.DataFrame(amz_b2cs), use_container_width=True)
+            else:
+                st.info("Amazon B2C data nahi mila.")
+                
+        with b2c_sub_tabs[2]:
+            fk_b2cs = [x for x in all_b2cs if x.get("Platform") == "Flipkart"]
+            if fk_b2cs:
+                st.caption("Flipkart Only B2C Sales:")
+                st.dataframe(pd.DataFrame(fk_b2cs), use_container_width=True)
+            else:
+                st.info("Flipkart B2C data nahi mila.")
+
+    # --- TAB 3: B2B INVOICES ---
+    with main_tab3:
+        st.write("### B2B Registered Invoices")
+        b2b_sub_tabs = st.tabs(["🌐 Combined B2B", "🟧 Amazon B2B", "🟦 Flipkart B2B"])
+        
+        with b2b_sub_tabs[0]:
+            if all_b2b:
+                st.caption("All Platforms Consolidated B2B Invoices:")
+                st.dataframe(pd.DataFrame(all_b2b), use_container_width=True)
+            else:
+                st.info("Koi B2B invoices nahi hain.")
+                
+        with b2b_sub_tabs[1]:
+            amz_b2b = [x for x in all_b2b if x.get("Platform") == "Amazon"]
+            if amz_b2b:
+                st.caption("Amazon Only B2B Invoices:")
+                st.dataframe(pd.DataFrame(amz_b2b), use_container_width=True)
+            else:
+                st.info("Amazon par koi B2B invoice nahi hai.")
+                
+        with b2b_sub_tabs[2]:
+            fk_b2b = [x for x in all_b2b if x.get("Platform") == "Flipkart"]
+            if fk_b2b:
+                st.caption("Flipkart Only B2B Invoices:")
+                st.dataframe(pd.DataFrame(fk_b2b), use_container_width=True)
+            else:
+                st.info("Flipkart par koi B2B invoice nahi hai.")
