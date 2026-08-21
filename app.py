@@ -7,7 +7,7 @@ import zipfile
 
 st.set_page_config(page_title="Multi-Platform GST Auto-Filer Pro", layout="wide", page_icon="🛍️")
 st.title("🛍️ Multi-Platform E-Commerce GST Auto-Filer & Analytics")
-st.caption("Amazon, Flipkart aur Meesho ki Excel (.xlsx) ya ZIP (.zip) files upload karein.")
+st.caption("Amazon, Flipkart aur Meesho ki Excel (.xlsx) ya ZIP (.zip) files direct upload karein.")
 
 def safe_float(val, default=0.0):
     try:
@@ -26,6 +26,8 @@ def detect_ecommerce_platform(file_bytes, filename=""):
     fn_low = filename.lower()
     if 'meesho' in fn_low or 'tcs_sales' in fn_low or 'gst_2479906' in fn_low:
         return "Meesho", "🟪 Meesho"
+    if 'gstr1-july' in fn_low or 'gstr-1' in fn_low or 'amazon' in fn_low:
+        return "Amazon", "🟧 Amazon"
         
     try:
         excel = pd.ExcelFile(file_bytes)
@@ -187,7 +189,7 @@ def parse_flipkart(file_bytes):
         "hsn": hsn_records, "b2cs": b2cs_records, "b2b": []
     }
 
-# --- PARSER 3: MEESHO (NET SALES CALCULATION) ---
+# --- PARSER 3: MEESHO (NET SALES) ---
 def parse_meesho_frames(df_sales, df_returns):
     df_sales = df_sales.copy()
     df_returns = df_returns.copy()
@@ -254,7 +256,7 @@ def parse_meesho_frames(df_sales, df_returns):
         "hsn": hsn_records, "b2cs": b2cs_records, "b2b": []
     }
 
-# --- UPLOADER & DISPATCHER ---
+# --- UPLOADER & ZIP DISPATCHER ---
 uploaded_files = st.file_uploader(
     "Upload GST Files (.xlsx, .xls, .zip)", 
     type=["xlsx", "xls", "zip", "csv"], 
@@ -267,13 +269,13 @@ if uploaded_files:
     for file_obj in uploaded_files:
         file_name = file_obj.name
         
-        # 1. ZIP Handler
+        # 1. ZIP File Processing (Amazon / Meesho / Flipkart)
         if file_name.lower().endswith('.zip'):
             try:
                 with zipfile.ZipFile(file_obj) as z:
                     extracted_names = [n for n in z.namelist() if n.endswith(('.xlsx', '.xls', '.csv')) and not n.startswith('__MACOSX/')]
                     
-                    # Meesho ZIP Detection
+                    # Case A: Meesho ZIP with separate sales & return
                     if any('tcs_sales' in n for n in extracted_names):
                         sales_name = next(n for n in extracted_names if 'tcs_sales.' in n or n.endswith('tcs_sales.xlsx'))
                         returns_name = next((n for n in extracted_names if 'tcs_sales_return' in n), None)
@@ -284,20 +286,24 @@ if uploaded_files:
                         st.success(f"📦 **ZIP File:** `{file_name}` ➔ **Identified Platform:** **🟪 Meesho** (Net Sales Processed)")
                         platform_results.append(parse_meesho_frames(df_s, df_r))
                     else:
-                        # Non-Meesho ZIP files
+                        # Case B: Amazon ZIP or other Platform ZIP
                         for inner_filename in extracted_names:
                             inner_bytes = io.BytesIO(z.read(inner_filename))
                             p_id, p_badge = detect_ecommerce_platform(inner_bytes, inner_filename)
                             inner_bytes.seek(0)
                             st.success(f"📦 **ZIP File:** `{file_name}` ➔ **Extracted:** `{inner_filename}` ➔ **Platform:** **{p_badge}**")
+                            
                             if p_id == "Flipkart":
                                 platform_results.append(parse_flipkart(inner_bytes))
+                            elif p_id == "Meesho":
+                                df_s = pd.read_excel(inner_bytes)
+                                platform_results.append(parse_meesho_frames(df_s, pd.DataFrame(columns=df_s.columns)))
                             else:
                                 platform_results.append(parse_amazon(inner_bytes))
             except Exception as e:
                 st.error(f"Error unzipping {file_name}: {e}")
         else:
-            # 2. Direct File Handler
+            # 2. Standalone Excel / CSV
             try:
                 p_id, p_badge = detect_ecommerce_platform(file_obj, file_name)
                 file_obj.seek(0)
@@ -313,7 +319,7 @@ if uploaded_files:
             except Exception as e:
                 st.error(f"Error processing {file_name}: {e}")
 
-    # Calculations
+    # Combine All Extracted Platform Data
     combined_gross = sum(p['gross'] for p in platform_results)
     combined_taxable = sum(p['taxable'] for p in platform_results)
     combined_igst = sum(p['igst'] for p in platform_results)
@@ -328,7 +334,7 @@ if uploaded_files:
 
     st.divider()
 
-    # 1. Comparison Table
+    # 1. Platform Comparison Table
     st.subheader("📊 Platform-Wise Sales & Tax Summary")
     comp_data = []
     for p in platform_results:
@@ -388,7 +394,7 @@ if uploaded_files:
 
     st.divider()
 
-    # 5. Export Downloads
+    # 5. Export Center
     st.subheader("📥 Export Combined & Platform Reports")
     d1, d2 = st.columns(2)
     
