@@ -4,10 +4,10 @@ import json
 import io
 import re
 
-st.set_page_config(page_title="AI GST Filing Assistant & Tax Brain", layout="wide", page_icon="🧠")
-st.title("🧠 Autonomous GST Copilot, Audit & Export Pro")
+st.set_page_config(page_title="Multi-Platform GST Auto-Filer Pro", layout="wide", page_icon="🛍️")
+st.title("🛍️ Multi-Platform E-Commerce GST Auto-Filer & Analytics")
+st.caption("Amazon aur Flipkart dono ki monthly GSTR-1 Excel files ek saath ya alag-alag upload karein.")
 
-# Safe float converter
 def safe_float(val, default=0.0):
     try:
         if pd.isna(val) or str(val).strip() == '':
@@ -16,287 +16,283 @@ def safe_float(val, default=0.0):
     except (ValueError, TypeError):
         return default
 
-# GSTIN Regex Validator
 def is_valid_gstin(gstin):
     pattern = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
     return bool(re.match(pattern, str(gstin).strip()))
 
-uploaded_file = st.file_uploader("Upload Monthly GST Excel File", type=["xlsx", "xls"])
-
-if uploaded_file:
-    try:
-        excel = pd.ExcelFile(uploaded_file)
-    except Exception as e:
-        st.error(f"❌ File read error: Kripya valid Excel format upload karein. ({e})")
-        st.stop()
-    
-    # 1. Supplier State Detection
-    supplier_state_code = "24" # Default Gujarat
+# --- PARSER 1: AMAZON ---
+def parse_amazon(file_bytes):
+    excel = pd.ExcelFile(file_bytes)
+    hsn_records, b2cs_records, b2b_records = [], [], []
+    taxable_sum, igst_sum, cgst_sum, sgst_sum, gross_sum = 0.0, 0.0, 0.0, 0.0, 0.0
     supplier_gstin = "N/A"
+    supplier_state = "24"
+
     if 'GSTIN' in excel.sheet_names:
-        df_gstin = pd.read_excel(uploaded_file, sheet_name='GSTIN', header=None)
+        df_gstin = pd.read_excel(file_bytes, sheet_name='GSTIN', header=None)
         for val in df_gstin.values.flatten():
             val_str = str(val).strip().upper()
             if len(val_str) == 15 and val_str[:2].isdigit():
-                supplier_state_code = val_str[:2]
                 supplier_gstin = val_str
+                supplier_state = val_str[:2]
                 break
 
-    # 2. HSN Summary Extraction
-    hsn_rows = []
-    taxable_hsn_sum = 0.0
-    igst_hsn_sum = 0.0
-    cgst_hsn_sum = 0.0
-    sgst_hsn_sum = 0.0
-    gross_hsn_sum = 0.0
-    
     if 'HSN Summary' in excel.sheet_names:
-        df_hsn = pd.read_excel(uploaded_file, sheet_name='HSN Summary', header=None)
-        raw_hsn_values = df_hsn.values[4:] if len(df_hsn.values) > 4 else []
-        
-        for r in raw_hsn_values:
+        df_hsn = pd.read_excel(file_bytes, sheet_name='HSN Summary', header=None)
+        for r in df_hsn.values[4:]:
             if len(r) > 9 and pd.notna(r[0]) and str(r[0]).strip() != '':
-                hsn_code = str(r[0]).strip()
-                uqc = str(r[2]).strip() if pd.notna(r[2]) else "PCS"
                 qty = safe_float(r[3])
-                rate = safe_float(r[4])
                 gross = safe_float(r[5])
                 taxable = safe_float(r[6])
                 igst = safe_float(r[7])
                 cgst = safe_float(r[8])
                 sgst = safe_float(r[9])
                 
-                taxable_hsn_sum += taxable
-                igst_hsn_sum += igst
-                cgst_hsn_sum += cgst
-                sgst_hsn_sum += sgst
-                gross_hsn_sum += gross
+                taxable_sum += taxable
+                igst_sum += igst
+                cgst_sum += cgst
+                sgst_sum += sgst
+                gross_sum += gross
                 
-                hsn_rows.append({
-                    "HSN Code": hsn_code, "UQC": uqc, "Qty": qty,
-                    "GST Rate": f"{rate*100:.0f}%",
-                    "Taxable (₹)": taxable, "IGST (₹)": igst,
-                    "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross Total (₹)": gross
+                hsn_records.append({
+                    "Platform": "Amazon", "HSN Code": str(r[0]).strip(), "UQC": str(r[2]).strip() if pd.notna(r[2]) else "PCS",
+                    "Qty": qty, "GST Rate": f"{safe_float(r[4])*100:.0f}%", "Taxable (₹)": taxable,
+                    "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross (₹)": gross
                 })
 
-    # 3. B2B Invoices Extraction
-    b2b_list = []
-    b2b_taxable_sum = 0.0
-    b2b_gross_sum = 0.0
-    b2b_errors = []
-    
-    if 'B2B' in excel.sheet_names:
-        df_b2b = pd.read_excel(uploaded_file, sheet_name='B2B', header=None)
-        raw_b2b_values = df_b2b.values[4:] if len(df_b2b.values) > 4 else []
-        
-        for r in raw_b2b_values:
-            if len(r) > 11 and pd.notna(r[0]) and str(r[0]).strip() != '':
-                buyer_gstin = str(r[0]).strip().upper()
-                inv_no = str(r[2]).strip()
-                inv_date = str(r[3]).strip()
-                pos = str(r[5]).strip()
-                inv_val = safe_float(r[4])
-                taxable_val = safe_float(r[11])
-                rate = safe_float(r[10])
-                
-                if not is_valid_gstin(buyer_gstin):
-                    b2b_errors.append(f"Invoice {inv_no}: Invalid GSTIN '{buyer_gstin}'")
-                
-                b2b_taxable_sum += taxable_val
-                b2b_gross_sum += inv_val
-                b2b_list.append({
-                    "Buyer GSTIN": buyer_gstin, "Invoice No": inv_no, "Date": inv_date,
-                    "Place of Supply": pos, "Rate": f"{rate*100:.0f}%",
-                    "Taxable Value (₹)": taxable_val, "Gross / Invoice Value (₹)": inv_val
-                })
-
-    # 4. B2C Small Extraction
-    b2cs_list = []
-    b2cs_taxable_sum = 0.0
-    b2cs_gross_sum = 0.0
-    
     if 'B2C Small' in excel.sheet_names:
-        df_b2cs = pd.read_excel(uploaded_file, sheet_name='B2C Small', header=None)
-        raw_b2cs_values = df_b2cs.values[4:] if len(df_b2cs.values) > 4 else []
-        
-        for r in raw_b2cs_values:
-            if len(r) > 4 and pd.notna(r[1]) and pd.notna(r[4]):
+        df_b2cs = pd.read_excel(file_bytes, sheet_name='B2C Small', header=None)
+        for r in df_b2cs.values[4:]:
+            if len(r) > 4 and pd.notna(r[1]) and safe_float(r[4]) > 0:
                 pos = str(r[1]).strip()
+                taxable = safe_float(r[4])
                 rate = safe_float(r[3], 0.05)
-                taxable_val = safe_float(r[4])
-                
-                if taxable_val > 0:
-                    is_intra = pos.startswith(supplier_state_code)
-                    igst = 0.0 if is_intra else round(taxable_val * rate, 2)
-                    cgst = round((taxable_val * rate) / 2, 2) if is_intra else 0.0
-                    sgst = round((taxable_val * rate) / 2, 2) if is_intra else 0.0
-                    gross_val = round(taxable_val + igst + cgst + sgst, 2)
-                    
-                    b2cs_taxable_sum += taxable_val
-                    b2cs_gross_sum += gross_val
-                    b2cs_list.append({
-                        "Place of Supply": pos, "Rate": f"{rate*100:.0f}%",
-                        "Taxable Value (₹)": taxable_val,
-                        "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst,
-                        "Gross Value (₹)": gross_val
-                    })
+                is_intra = pos.startswith(supplier_state)
+                igst = 0.0 if is_intra else round(taxable * rate, 2)
+                cgst = round((taxable * rate) / 2, 2) if is_intra else 0.0
+                sgst = round((taxable * rate) / 2, 2) if is_intra else 0.0
+                b2cs_records.append({
+                    "Platform": "Amazon", "Place of Supply": pos, "Rate": f"{rate*100:.0f}%",
+                    "Taxable Value (₹)": taxable, "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst,
+                    "Gross Value (₹)": round(taxable + igst + cgst + sgst, 2)
+                })
 
-    # 5. Audit Validations
-    st.subheader("🔍 Automated GST Audit & Notice Prevention Check")
-    audit_passed = True
+    if 'B2B' in excel.sheet_names:
+        df_b2b = pd.read_excel(file_bytes, sheet_name='B2B', header=None)
+        for r in df_b2b.values[4:]:
+            if len(r) > 11 and pd.notna(r[0]) and str(r[0]).strip() != '':
+                b2b_records.append({
+                    "Platform": "Amazon", "Buyer GSTIN": str(r[0]).strip().upper(), "Invoice No": str(r[2]).strip(),
+                    "Date": str(r[3]).strip(), "Place of Supply": str(r[5]).strip(), "Rate": f"{safe_float(r[10])*100:.0f}%",
+                    "Taxable Value (₹)": safe_float(r[11]), "Gross / Invoice Value (₹)": safe_float(r[4])
+                })
+
+    return {
+        "platform": "Amazon", "supplier_gstin": supplier_gstin,
+        "gross": gross_sum, "taxable": taxable_sum,
+        "igst": igst_sum, "cgst": cgst_sum, "sgst": sgst_sum,
+        "total_tax": igst_sum + cgst_sum + sgst_sum,
+        "tcs": round(taxable_sum * 0.005, 2), # Amazon 0.5% net TCS
+        "hsn": hsn_records, "b2cs": b2cs_records, "b2b": b2b_records
+    }
+
+# --- PARSER 2: FLIPKART ---
+def parse_flipkart(file_bytes):
+    excel = pd.ExcelFile(file_bytes)
+    hsn_records, b2cs_records, b2b_records = [], [], []
+    taxable_sum, igst_sum, cgst_sum, sgst_sum, gross_sum = 0.0, 0.0, 0.0, 0.0, 0.0
+    supplier_gstin = "24ECEPM6676L1Z0"
+
+    if 'Section 12 in GSTR-1' in excel.sheet_names:
+        df_hsn = pd.read_excel(file_bytes, sheet_name='Section 12 in GSTR-1')
+        for _, r in df_hsn.iterrows():
+            qty = safe_float(r.get('Total Quantity in Nos.', 0))
+            gross = safe_float(r.get('Total\n Value Rs.', 0))
+            taxable = safe_float(r.get('Total Taxable Value Rs.', 0))
+            igst = safe_float(r.get('IGST Amount Rs.', 0))
+            cgst = safe_float(r.get('CGST Amount Rs.', 0))
+            sgst = safe_float(r.get('SGST Amount Rs.', 0))
+            
+            taxable_sum += taxable
+            igst_sum += igst
+            cgst_sum += cgst
+            sgst_sum += sgst
+            gross_sum += gross
+            
+            hsn_records.append({
+                "Platform": "Flipkart", "HSN Code": str(r.get('HSN Number', '')).strip(), "UQC": "NOS",
+                "Qty": qty, "GST Rate": "5%", "Taxable (₹)": taxable,
+                "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross (₹)": gross
+            })
+
+    # Flipkart Intra-State (7A)
+    if 'Section 7(A)(2) in GSTR-1' in excel.sheet_names:
+        df_7a = pd.read_excel(file_bytes, sheet_name='Section 7(A)(2) in GSTR-1')
+        for _, r in df_7a.iterrows():
+            taxable = safe_float(r.get('Aggregate Taxable Value Rs.', 0))
+            cgst = safe_float(r.get('CGST Amount Rs.', 0))
+            sgst = safe_float(r.get('SGST /UT Amount Rs.', 0))
+            if taxable > 0:
+                b2cs_records.append({
+                    "Platform": "Flipkart", "Place of Supply": "24-Gujarat", "Rate": "5%",
+                    "Taxable Value (₹)": taxable, "IGST (₹)": 0.0, "CGST (₹)": cgst, "SGST (₹)": sgst,
+                    "Gross Value (₹)": round(taxable + cgst + sgst, 2)
+                })
+
+    # Flipkart Inter-State (7B)
+    if 'Section 7(B)(2) in GSTR-1' in excel.sheet_names:
+        df_7b = pd.read_excel(file_bytes, sheet_name='Section 7(B)(2) in GSTR-1')
+        for _, r in df_7b.iterrows():
+            taxable = safe_float(r.get('Aggregate Taxable Value Rs.', 0))
+            igst = safe_float(r.get('IGST Amount Rs.', 0))
+            state = str(r.get('Delivered State (PoS)', '')).strip()
+            if taxable > 0:
+                b2cs_records.append({
+                    "Platform": "Flipkart", "Place of Supply": state, "Rate": "5%",
+                    "Taxable Value (₹)": taxable, "IGST (₹)": igst, "CGST (₹)": 0.0, "SGST (₹)": 0.0,
+                    "Gross Value (₹)": round(taxable + igst, 2)
+                })
+
+    # TCS from GSTR-8
+    tcs_total = 0.0
+    if 'Section 3 in GSTR-8' in excel.sheet_names:
+        df_tcs = pd.read_excel(file_bytes, sheet_name='Section 3 in GSTR-8')
+        tcs_total = safe_float(df_tcs['TCS IGST amount Rs.'].sum()) + safe_float(df_tcs['TCS CGST amount Rs.'].sum()) + safe_float(df_tcs['TCS SGST amount Rs.'].sum())
+
+    return {
+        "platform": "Flipkart", "supplier_gstin": supplier_gstin,
+        "gross": gross_sum, "taxable": taxable_sum,
+        "igst": igst_sum, "cgst": cgst_sum, "sgst": sgst_sum,
+        "total_tax": igst_sum + cgst_sum + sgst_sum,
+        "tcs": round(tcs_total, 2),
+        "hsn": hsn_records, "b2cs": b2cs_records, "b2b": []
+    }
+
+# Multi-file Uploader
+uploaded_files = st.file_uploader("Upload GST Excel Files (Amazon & Flipkart)", type=["xlsx", "xls"], accept_multiple_files=True)
+
+if uploaded_files:
+    platform_results = []
     
-    diff = round(abs((b2b_taxable_sum + b2cs_taxable_sum) - taxable_hsn_sum), 2)
-    if diff == 0.0:
-        st.success("✅ **100% Match:** B2B + B2C Total Sales HSN Table se perfectly match ho rahi hai. (No Mismatch Risk)")
-    else:
-        audit_passed = False
-        st.error(f"⚠️ **Mismatch Alert (Risk of ASMT-10 Notice):** B2B+B2C Total (₹{b2b_taxable_sum + b2cs_taxable_sum:,.2f}) aur HSN Total (₹{taxable_hsn_sum:,.2f}) mein ₹{diff} ka difference hai!")
+    for uploaded_file in uploaded_files:
+        try:
+            excel = pd.ExcelFile(uploaded_file)
+            sheets = excel.sheet_names
+            if any('Section 7(A)(2)' in s or 'Section 12' in s for s in sheets):
+                res = parse_flipkart(uploaded_file)
+            else:
+                res = parse_amazon(uploaded_file)
+            platform_results.append(res)
+        except Exception as e:
+            st.error(f"Error processing {uploaded_file.name}: {e}")
 
-    if b2b_errors:
-        audit_passed = False
-        for err in b2b_errors:
-            st.error(f"⚠️ **B2B GSTIN Error:** {err}")
+    # Combine All Platform Data
+    combined_gross = sum(p['gross'] for p in platform_results)
+    combined_taxable = sum(p['taxable'] for p in platform_results)
+    combined_igst = sum(p['igst'] for p in platform_results)
+    combined_cgst = sum(p['cgst'] for p in platform_results)
+    combined_sgst = sum(p['sgst'] for p in platform_results)
+    combined_total_tax = sum(p['total_tax'] for p in platform_results)
+    combined_tcs = sum(p['tcs'] for p in platform_results)
+    
+    all_hsn = [item for p in platform_results for item in p['hsn']]
+    all_b2cs = [item for p in platform_results for item in p['b2cs']]
+    all_b2b = [item for p in platform_results for item in p['b2b']]
+
+    # 1. Platform Comparison Table
+    st.subheader("📊 Platform-Wise Sales & Tax Comparison")
+    comp_data = []
+    for p in platform_results:
+        comp_data.append({
+            "Platform": p['platform'],
+            "Gross Sales (₹)": f"₹{p['gross']:,.2f}",
+            "Taxable Sales (₹)": f"₹{p['taxable']:,.2f}",
+            "IGST (₹)": f"₹{p['igst']:,.2f}",
+            "CGST (₹)": f"₹{p['cgst']:,.2f}",
+            "SGST (₹)": f"₹{p['sgst']:,.2f}",
+            "Total Output GST (₹)": f"₹{p['total_tax']:,.2f}",
+            "TCS Credit (₹)": f"₹{p['tcs']:,.2f}"
+        })
+    st.table(pd.DataFrame(comp_data))
 
     st.divider()
 
-    # 6. Summary KPI Metrics
-    total_tax = igst_hsn_sum + cgst_hsn_sum + sgst_hsn_sum
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Gross Sales (Turnover)", f"₹{gross_hsn_sum:,.2f}")
-    col2.metric("Taxable Turnover", f"₹{taxable_hsn_sum:,.2f}")
-    col3.metric("Total Output GST", f"₹{total_tax:,.2f}")
-    col4.metric("IGST", f"₹{igst_hsn_sum:,.2f}")
-    col5.metric("CGST + SGST", f"₹{(cgst_hsn_sum + sgst_hsn_sum):,.2f}")
-    
-    st.subheader("GSTR-3B Tax Liability Breakdown")
-    st.write(f"👉 **Gross Output Tax in Table 3.1:** ₹{round(total_tax):,}")
+    # 2. Consolidated KPI Cards
+    st.subheader("🌐 Combined Total Tax Liability (All Platforms Consolidated)")
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    kpi1.metric("Total Gross Sales", f"₹{combined_gross:,.2f}")
+    kpi2.metric("Total Taxable Sales", f"₹{combined_taxable:,.2f}")
+    kpi3.metric("Total Output GST", f"₹{combined_total_tax:,.2f}")
+    kpi4.metric("Total IGST", f"₹{combined_igst:,.2f}")
+    kpi5.metric("Total CGST + SGST", f"₹{(combined_cgst + combined_sgst):,.2f}")
 
-    # 7. ITC / TCS Deduction Calculator
+    # 3. GSTR-3B Cash Calculator with Combined ITC & TCS
     st.divider()
-    st.subheader("💳 Input Tax Credit (ITC) Deduction")
+    st.subheader("💳 GSTR-3B Final Cash Payment Calculator")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        itc_igst = c1.number_input("Purchase IGST", min_value=0.0, value=0.0, step=50.0)
+        itc_igst = c1.number_input("Purchase IGST (ITC)", min_value=0.0, value=0.0, step=100.0)
     with c2:
-        itc_cgst = c2.number_input("Purchase CGST", min_value=0.0, value=0.0, step=50.0)
+        itc_cgst = c2.number_input("Purchase CGST (ITC)", min_value=0.0, value=0.0, step=100.0)
     with c3:
-        itc_sgst = c3.number_input("Purchase SGST", min_value=0.0, value=0.0, step=50.0)
+        itc_sgst = c3.number_input("Purchase SGST (ITC)", min_value=0.0, value=0.0, step=100.0)
     with c4:
-        tcs_val = c4.number_input("E-Commerce TCS Credit", min_value=0.0, value=0.0, step=10.0)
+        tcs_claim = c4.number_input("Combined TCS Credit", min_value=0.0, value=round(combined_tcs, 2), step=50.0)
 
-    net_igst_cash = max(0.0, igst_hsn_sum - itc_igst)
-    net_cgst_cash = max(0.0, cgst_hsn_sum - itc_cgst)
-    net_sgst_cash = max(0.0, sgst_hsn_sum - itc_sgst)
-    net_cash = max(0.0, (net_igst_cash + net_cgst_cash + net_sgst_cash) - tcs_val)
+    net_igst = max(0.0, combined_igst - itc_igst)
+    net_cgst = max(0.0, combined_cgst - itc_cgst)
+    net_sgst = max(0.0, combined_sgst - itc_sgst)
+    final_cash_tax = max(0.0, (net_igst + net_cgst + net_sgst) - tcs_claim)
 
-    st.success(f"👉 **Final Net Cash Payable (Bank Challan):** ₹{round(net_cash):,} *(IGST: ₹{net_igst_cash:,.2f} | CGST: ₹{net_cgst_cash:,.2f} | SGST: ₹{net_sgst_cash:,.2f})*")
-
-    st.divider()
-
-    # 8. AUTONOMOUS AI BRAIN & COPILOT SECTION
-    st.subheader("🤖 Autonomous AI Tax Auditor & Growth Advisor")
-    
-    sorted_states = sorted(b2cs_list, key=lambda x: x['Taxable Value (₹)'], reverse=True) if b2cs_list else []
-    top_state = sorted_states[0]['Place of Supply'] if sorted_states else "N/A"
-    top_state_val = sorted_states[0]['Taxable Value (₹)'] if sorted_states else 0.0
-
-    b1, b2 = st.columns([1, 1])
-    with b1:
-        st.markdown(f"""
-        ### 📈 AI Strategic Insights
-        * 🎯 **Top Performing Market:** **{top_state}** se sabse zyada demand aayi hai (₹{top_state_val:,.2f} sales). Ads aur inventory ko is state ke liye optimize karein.
-        * 🛡️ **Audit Status:** Sabhi sheets ka mathematical validation **100% Accurate** hai. ASMT-10 notice ka risk 0% hai.
-        * 💡 **Cash Flow Advice:** Is mahine ka estimated e-commerce TCS credit ₹{taxable_hsn_sum * 0.01:,.2f} claim karna na bhoolein.
-        """)
-    
-    with b2:
-        st.markdown("### 💬 Ask Tax Copilot")
-        q = st.selectbox("Quick Questions:", [
-            "Select a question...",
-            "Mera sabse top selling state kaun sa hai?",
-            "Kya mujhe koi notice aane ka risk hai?",
-            "GSTR-1 aur GSTR-3B ki due dates kya hain?",
-            "Net cash kitna bharna padega?"
-        ])
-        if q == "Mera sabse top selling state kaun sa hai?":
-            st.info(f"👉 Sabse zyada sales **{top_state}** se hui hai (Total Taxable: ₹{top_state_val:,.2f}).")
-        elif q == "Kya mujhe koi notice aane ka risk hai?":
-            st.info("👉 Koi risk nahi hai. HSN vs Outward Sales summary perfectly match ho rahi hai.")
-        elif q == "GSTR-1 aur GSTR-3B ki due dates kya hain?":
-            st.info("👉 GSTR-1 ki due date agle mahine ki **11 tareekh** aur GSTR-3B ki **20 tareekh** hoti hai.")
-        elif q == "Net cash kitna bharna padega?":
-            st.info(f"👉 Aapka total cash liability ₹{round(net_cash):,} hai (ITC/TCS minus karne ke baad).")
+    st.success(f"👉 **Consolidated Net Cash to Pay (GSTR-3B Challan):** ₹{round(final_cash_tax):,} *(IGST: ₹{net_igst:,.2f} | CGST: ₹{net_cgst:,.2f} | SGST: ₹{net_sgst:,.2f})*")
 
     st.divider()
 
-    # 9. Export Center (Download Section)
-    st.subheader("📥 Export & Download Filing Reports")
-    d_col1, d_col2 = st.columns(2)
+    # 4. GSTR-3B Portal Direct Table
+    st.subheader("📋 Direct GSTR-3B Form Mapping (Combined)")
+    gstr3b_table = [
+        {"GST Portal Section": "Table 3.1(a) Outward Taxable Supplies", "Taxable Value (₹)": f"₹{combined_taxable:,.2f}", "IGST (₹)": f"₹{combined_igst:,.2f}", "CGST (₹)": f"₹{combined_cgst:,.2f}", "SGST (₹)": f"₹{combined_sgst:,.2f}"},
+        {"GST Portal Section": "Table 4(A)(5) All Other Eligible ITC", "Taxable Value (₹)": "-", "IGST (₹)": f"₹{itc_igst:,.2f}", "CGST (₹)": f"₹{itc_cgst:,.2f}", "SGST (₹)": f"₹{itc_sgst:,.2f}"},
+        {"GST Portal Section": "Table 6.1 Payment of Tax (Net Cash)", "Taxable Value (₹)": "-", "IGST (₹)": f"₹{net_igst:,.2f}", "CGST (₹)": f"₹{net_cgst:,.2f}", "SGST (₹)": f"₹{net_sgst:,.2f}"}
+    ]
+    st.table(pd.DataFrame(gstr3b_table))
 
-    df_hsn_export = pd.DataFrame(hsn_rows)
-    df_b2b_export = pd.DataFrame(b2b_list)
-    df_b2c_export = pd.DataFrame(b2cs_list)
+    st.divider()
 
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-        if not df_hsn_export.empty:
-            df_hsn_export.to_excel(writer, sheet_name='HSN Summary', index=False)
-        if not df_b2b_export.empty:
-            df_b2b_export.to_excel(writer, sheet_name='B2B Invoices', index=False)
-        if not df_b2c_export.empty:
-            df_b2c_export.to_excel(writer, sheet_name='B2C Small', index=False)
+    # 5. Export Downloads
+    st.subheader("📥 Export Combined Reports")
+    d1, d2 = st.columns(2)
     
-    with d_col1:
-        st.download_button(
-            label="📊 Download Clean Excel Audit Report (For CA)",
-            data=excel_buffer.getvalue(),
-            file_name="GST_Monthly_Clean_Audit_Report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+    excel_buf = io.BytesIO()
+    with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
+        pd.DataFrame(comp_data).to_excel(writer, sheet_name='Platform Summary', index=False)
+        pd.DataFrame(all_hsn).to_excel(writer, sheet_name='Combined HSN', index=False)
+        pd.DataFrame(all_b2cs).to_excel(writer, sheet_name='Combined B2C', index=False)
+        if all_b2b:
+            pd.DataFrame(all_b2b).to_excel(writer, sheet_name='B2B Invoices', index=False)
+            
+    with d1:
+        st.download_button("📊 Download Consolidated Excel (CA Audit)", data=excel_buf.getvalue(), file_name="GST_Combined_Platform_Audit.xlsx", use_container_width=True)
 
-    portal_json_payload = {
-        "gstin": supplier_gstin,
-        "gross_turnover": round(gross_hsn_sum, 2),
-        "taxable_turnover": round(taxable_hsn_sum, 2),
-        "total_tax": round(total_tax, 2),
-        "igst": round(igst_hsn_sum, 2),
-        "cgst": round(cgst_hsn_sum, 2),
-        "sgst": round(sgst_hsn_sum, 2),
-        "b2b": b2b_list,
-        "b2cs": b2cs_list,
-        "hsn": hsn_rows
+    json_payload = {
+        "gross_sales": round(combined_gross, 2), "taxable_sales": round(combined_taxable, 2),
+        "total_tax": round(combined_total_tax, 2), "igst": round(combined_igst, 2),
+        "cgst": round(combined_cgst, 2), "sgst": round(combined_sgst, 2),
+        "platforms": comp_data, "hsn": all_hsn, "b2cs": all_b2cs
     }
-    json_bytes = json.dumps(portal_json_payload, indent=4).encode('utf-8')
-
-    with d_col2:
-        st.download_button(
-            label="⚡ Download GSTR-1 Portal JSON (Offline Tool)",
-            data=json_bytes,
-            file_name="GSTR1_Offline_Filing_Data.json",
-            mime="application/json",
-            use_container_width=True
-        )
+    with d2:
+        st.download_button("⚡ Download Combined GSTR-1 JSON", data=json.dumps(json_payload, indent=4).encode('utf-8'), file_name="GSTR1_Combined_Offline.json", mime="application/json", use_container_width=True)
 
     st.divider()
 
-    # 10. Data Tables Breakdown
-    st.subheader("📋 Sheet Wise Complete Breakdown")
-
-    st.write("**1. HSN Summary Data (GSTR-1 Table 12)**")
-    if hsn_rows:
-        st.dataframe(pd.DataFrame(hsn_rows), use_container_width=True)
-    else:
-        st.info("HSN summary data nahi mila.")
-
-    st.write("**2. B2B Registered Sales (GSTR-1 Table 4A)**")
-    if b2b_list:
-        st.dataframe(pd.DataFrame(b2b_list), use_container_width=True)
-    else:
-        st.info("B2B sheet mein koi data nahi mila.")
-
-    st.write("**3. B2C State-Wise Sales (GSTR-1 Table 7)**")
-    if b2cs_list:
-        st.dataframe(pd.DataFrame(b2cs_list), use_container_width=True)
-    else:
-        st.info("B2C Small sheet mein koi data nahi mila.")
+    # 6. Detailed Tables
+    t1, t2, t3 = st.tabs(["📦 Combined HSN Summary", "🛒 Combined B2C State-Wise Sales", "🏬 B2B Invoices"])
+    with t1:
+        st.dataframe(pd.DataFrame(all_hsn), use_container_width=True)
+    with t2:
+        st.dataframe(pd.DataFrame(all_b2cs), use_container_width=True)
+    with t3:
+        if all_b2b:
+            st.dataframe(pd.DataFrame(all_b2b), use_container_width=True)
+        else:
+            st.info("Koi B2B invoices nahi hain.")
