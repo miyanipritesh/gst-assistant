@@ -7,7 +7,7 @@ import zipfile
 
 st.set_page_config(page_title="Multi-Platform GST Auto-Filer Pro", layout="wide", page_icon="🛍️")
 st.title("🛍️ Multi-Platform E-Commerce GST Auto-Filer & Analytics")
-st.caption("Amazon, Flipkart aur Meesho ki Excel files (.xlsx, .xls) ya direct (.zip) archive upload karein.")
+st.caption("Amazon, Flipkart aur Meesho ki Excel (.xlsx) ya ZIP (.zip) files upload karein.")
 
 def safe_float(val, default=0.0):
     try:
@@ -22,22 +22,21 @@ def is_valid_gstin(gstin):
     return bool(re.match(pattern, str(gstin).strip()))
 
 # --- AUTO DETECTOR ---
-def detect_ecommerce_platform(file_bytes):
+def detect_ecommerce_platform(file_bytes, filename=""):
+    fn_low = filename.lower()
+    if 'meesho' in fn_low or 'tcs_sales' in fn_low or 'gst_2479906' in fn_low:
+        return "Meesho", "🟪 Meesho"
+        
     try:
         excel = pd.ExcelFile(file_bytes)
         sheets = [s.strip().lower() for s in excel.sheet_names]
         
-        # 1. Flipkart Signature
-        if any('section 7(a)' in s or 'section 12' in s or 'section 7(b)' in s or 'section 3 in gstr-8' in s for s in sheets):
+        if any('section 7(a)' in s or 'section 12 in gstr-1' in s or 'section 7(b)' in s or 'section 3 in gstr-8' in s for s in sheets):
             return "Flipkart", "🟦 Flipkart"
-            
-        # 2. Meesho Signature
-        if any('forward' in s or 'reverse' in s or 'meesho' in s or 'b2c_supplies' in s or 'tcs_details' in s or 'b2c supplies' in s for s in sheets):
-            return "Meesho", "🟪 Meesho"
-            
-        # 3. Amazon Signature
         if any('b2c small' in s or 'hsn summary' in s or 'b2cl cn' in s for s in sheets):
             return "Amazon", "🟧 Amazon"
+        if any('identifier' in s or 'tcs_sales' in s for s in sheets):
+            return "Meesho", "🟪 Meesho"
             
         return "Unknown", "⚪ Unknown Platform"
     except Exception:
@@ -188,82 +187,74 @@ def parse_flipkart(file_bytes):
         "hsn": hsn_records, "b2cs": b2cs_records, "b2b": []
     }
 
-# --- PARSER 3: MEESHO ---
-def parse_meesho(file_bytes):
-    excel = pd.ExcelFile(file_bytes)
-    hsn_records, b2cs_records, b2b_records = [], [], []
-    taxable_sum, igst_sum, cgst_sum, sgst_sum, gross_sum = 0.0, 0.0, 0.0, 0.0, 0.0
-    supplier_gstin = "24ECEPM6676L1Z0"
-    supplier_state = "24"
-
-    for s in excel.sheet_names:
-        s_low = s.lower()
-        if 'forward' in s_low or 'b2c' in s_low or 'sales' in s_low or 'gstr' in s_low:
-            df = pd.read_excel(file_bytes, sheet_name=s)
-            df.columns = [str(c).strip().lower() for c in df.columns]
+# --- PARSER 3: MEESHO (NET SALES CALCULATION) ---
+def parse_meesho_frames(df_sales, df_returns):
+    df_sales = df_sales.copy()
+    df_returns = df_returns.copy()
+    df_sales.columns = [c.strip().lower() for c in df_sales.columns]
+    df_returns.columns = [c.strip().lower() for c in df_returns.columns]
+    
+    df_sales['sign'] = 1
+    df_returns['sign'] = -1
+    df_all = pd.concat([df_sales, df_returns], ignore_index=True)
+    
+    df_all['net_taxable'] = df_all['total_taxable_sale_value'] * df_all['sign']
+    df_all['net_gross'] = df_all['total_invoice_value'] * df_all['sign']
+    df_all['net_tax'] = df_all['tax_amount'] * df_all['sign']
+    df_all['net_qty'] = df_all['quantity'] * df_all['sign']
+    
+    def is_gujarat(state_val):
+        s = str(state_val).strip().upper()
+        return s == 'GUJARAT' or s.startswith('24') or s == 'IN-GJ' or s == 'GJ'
+    
+    df_all['is_intra'] = df_all['end_customer_state_new'].apply(is_gujarat)
+    df_all['igst'] = df_all.apply(lambda r: 0.0 if r['is_intra'] else r['net_tax'], axis=1)
+    df_all['cgst'] = df_all.apply(lambda r: (r['net_tax'] / 2.0) if r['is_intra'] else 0.0, axis=1)
+    df_all['sgst'] = df_all.apply(lambda r: (r['net_tax'] / 2.0) if r['is_intra'] else 0.0, axis=1)
+    
+    taxable_sum = df_all['net_taxable'].sum()
+    gross_sum = df_all['net_gross'].sum()
+    igst_sum = df_all['igst'].sum()
+    cgst_sum = df_all['cgst'].sum()
+    sgst_sum = df_all['sgst'].sum()
+    total_tax_sum = igst_sum + cgst_sum + sgst_sum
+    
+    state_grp = df_all.groupby('end_customer_state_new').agg({
+        'net_taxable': 'sum', 'igst': 'sum', 'cgst': 'sum', 'sgst': 'sum', 'net_gross': 'sum', 'gst_rate': 'first'
+    }).reset_index()
+    
+    b2cs_records = []
+    for _, r in state_grp.iterrows():
+        if round(r['net_taxable'], 2) != 0:
+            b2cs_records.append({
+                "Platform": "Meesho", "Place of Supply": str(r['end_customer_state_new']).strip().title(),
+                "Rate": f"{r['gst_rate']:.0f}%", "Taxable Value (₹)": round(r['net_taxable'], 2),
+                "IGST (₹)": round(r['igst'], 2), "CGST (₹)": round(r['cgst'], 2), "SGST (₹)": round(r['sgst'], 2),
+                "Gross Value (₹)": round(r['net_gross'], 2)
+            })
             
-            for _, r in df.iterrows():
-                taxable = 0.0
-                for col in df.columns:
-                    if 'taxable' in col:
-                        taxable = safe_float(r[col])
-                        break
-                
-                pos = "Other"
-                for col in df.columns:
-                    if 'state' in col or 'pos' in col or 'place of supply' in col:
-                        pos = str(r[col]).strip()
-                        break
-                
-                hsn = "9999"
-                for col in df.columns:
-                    if 'hsn' in col:
-                        hsn = str(r[col]).strip()
-                        break
-                        
-                rate = 0.05
-                for col in df.columns:
-                    if 'rate' in col or 'gst %' in col:
-                        rate = safe_float(r[col])
-                        if rate > 1:
-                            rate = rate / 100.0
-                        break
-
-                if taxable != 0:
-                    is_intra = pos.startswith(supplier_state) or 'gujarat' in pos.lower()
-                    igst = 0.0 if is_intra else round(taxable * rate, 2)
-                    cgst = round((taxable * rate) / 2, 2) if is_intra else 0.0
-                    sgst = round((taxable * rate) / 2, 2) if is_intra else 0.0
-                    gross = round(taxable + igst + cgst + sgst, 2)
-
-                    taxable_sum += taxable
-                    igst_sum += igst
-                    cgst_sum += cgst
-                    sgst_sum += sgst
-                    gross_sum += gross
-
-                    b2cs_records.append({
-                        "Platform": "Meesho", "Place of Supply": pos, "Rate": f"{rate*100:.0f}%",
-                        "Taxable Value (₹)": taxable, "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst,
-                        "Gross Value (₹)": gross
-                    })
-                    
-                    hsn_records.append({
-                        "Platform": "Meesho", "HSN Code": hsn, "UQC": "PCS",
-                        "Qty": 1.0, "GST Rate": f"{rate*100:.0f}%", "Taxable (₹)": taxable,
-                        "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross Total (₹)": gross
-                    })
-
-    tcs_val = round(taxable_sum * 0.005, 2)
+    hsn_grp = df_all.groupby(['hsn_code', 'gst_rate']).agg({
+        'net_qty': 'sum', 'net_taxable': 'sum', 'igst': 'sum', 'cgst': 'sum', 'sgst': 'sum', 'net_gross': 'sum'
+    }).reset_index()
+    
+    hsn_records = []
+    for _, r in hsn_grp.iterrows():
+        hsn_records.append({
+            "Platform": "Meesho", "HSN Code": str(int(r['hsn_code'])) if pd.notna(r['hsn_code']) else "9999",
+            "UQC": "PCS", "Qty": r['net_qty'], "GST Rate": f"{r['gst_rate']:.0f}%",
+            "Taxable (₹)": round(r['net_taxable'], 2), "IGST (₹)": round(r['igst'], 2),
+            "CGST (₹)": round(r['cgst'], 2), "SGST (₹)": round(r['sgst'], 2), "Gross Total (₹)": round(r['net_gross'], 2)
+        })
+        
     return {
-        "platform": "Meesho", "supplier_gstin": supplier_gstin,
-        "gross": gross_sum, "taxable": taxable_sum,
-        "igst": igst_sum, "cgst": cgst_sum, "sgst": sgst_sum,
-        "total_tax": igst_sum + cgst_sum + sgst_sum,
-        "tcs": tcs_val, "hsn": hsn_records, "b2cs": b2cs_records, "b2b": []
+        "platform": "Meesho", "supplier_gstin": "24ECEPM6676L1Z0",
+        "gross": round(gross_sum, 2), "taxable": round(taxable_sum, 2),
+        "igst": round(igst_sum, 2), "cgst": round(cgst_sum, 2), "sgst": round(sgst_sum, 2),
+        "total_tax": round(total_tax_sum, 2), "tcs": round(taxable_sum * 0.005, 2),
+        "hsn": hsn_records, "b2cs": b2cs_records, "b2b": []
     }
 
-# --- FILE UPLOADER WITH ZIP EXTRACTION SUPPORT ---
+# --- UPLOADER & DISPATCHER ---
 uploaded_files = st.file_uploader(
     "Upload GST Files (.xlsx, .xls, .zip)", 
     type=["xlsx", "xls", "zip", "csv"], 
@@ -273,49 +264,56 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     platform_results = []
     
-    # Process Files (including in-memory ZIP extraction)
     for file_obj in uploaded_files:
         file_name = file_obj.name
         
-        # Check if the uploaded file is a ZIP archive
+        # 1. ZIP Handler
         if file_name.lower().endswith('.zip'):
             try:
                 with zipfile.ZipFile(file_obj) as z:
-                    for inner_filename in z.namelist():
-                        if inner_filename.endswith(('.xlsx', '.xls', '.csv')) and not inner_filename.startswith('__MACOSX/'):
+                    extracted_names = [n for n in z.namelist() if n.endswith(('.xlsx', '.xls', '.csv')) and not n.startswith('__MACOSX/')]
+                    
+                    # Meesho ZIP Detection
+                    if any('tcs_sales' in n for n in extracted_names):
+                        sales_name = next(n for n in extracted_names if 'tcs_sales.' in n or n.endswith('tcs_sales.xlsx'))
+                        returns_name = next((n for n in extracted_names if 'tcs_sales_return' in n), None)
+                        
+                        df_s = pd.read_excel(io.BytesIO(z.read(sales_name)))
+                        df_r = pd.read_excel(io.BytesIO(z.read(returns_name))) if returns_name else pd.DataFrame(columns=df_s.columns)
+                        
+                        st.success(f"📦 **ZIP File:** `{file_name}` ➔ **Identified Platform:** **🟪 Meesho** (Net Sales Processed)")
+                        platform_results.append(parse_meesho_frames(df_s, df_r))
+                    else:
+                        # Non-Meesho ZIP files
+                        for inner_filename in extracted_names:
                             inner_bytes = io.BytesIO(z.read(inner_filename))
-                            p_id, p_badge = detect_ecommerce_platform(inner_bytes)
+                            p_id, p_badge = detect_ecommerce_platform(inner_bytes, inner_filename)
                             inner_bytes.seek(0)
-                            
                             st.success(f"📦 **ZIP File:** `{file_name}` ➔ **Extracted:** `{inner_filename}` ➔ **Platform:** **{p_badge}**")
-                            
                             if p_id == "Flipkart":
-                                res = parse_flipkart(inner_bytes)
-                            elif p_id == "Meesho":
-                                res = parse_meesho(inner_bytes)
+                                platform_results.append(parse_flipkart(inner_bytes))
                             else:
-                                res = parse_amazon(inner_bytes)
-                            platform_results.append(res)
+                                platform_results.append(parse_amazon(inner_bytes))
             except Exception as e:
                 st.error(f"Error unzipping {file_name}: {e}")
         else:
-            # Regular Excel / CSV File
+            # 2. Direct File Handler
             try:
-                p_id, p_badge = detect_ecommerce_platform(file_obj)
+                p_id, p_badge = detect_ecommerce_platform(file_obj, file_name)
                 file_obj.seek(0)
                 st.success(f"📁 **File:** `{file_name}` ➔ **Platform:** **{p_badge}**")
                 
                 if p_id == "Flipkart":
-                    res = parse_flipkart(file_obj)
+                    platform_results.append(parse_flipkart(file_obj))
                 elif p_id == "Meesho":
-                    res = parse_meesho(file_obj)
+                    df_single = pd.read_excel(file_obj)
+                    platform_results.append(parse_meesho_frames(df_single, pd.DataFrame(columns=df_single.columns)))
                 else:
-                    res = parse_amazon(file_obj)
-                platform_results.append(res)
+                    platform_results.append(parse_amazon(file_obj))
             except Exception as e:
                 st.error(f"Error processing {file_name}: {e}")
 
-    # Combine All Extracted Data
+    # Calculations
     combined_gross = sum(p['gross'] for p in platform_results)
     combined_taxable = sum(p['taxable'] for p in platform_results)
     combined_igst = sum(p['igst'] for p in platform_results)
@@ -330,7 +328,7 @@ if uploaded_files:
 
     st.divider()
 
-    # 1. Platform Comparison Table
+    # 1. Comparison Table
     st.subheader("📊 Platform-Wise Sales & Tax Summary")
     comp_data = []
     for p in platform_results:
