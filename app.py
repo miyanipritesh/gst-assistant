@@ -5,8 +5,8 @@ import io
 import re
 import zipfile
 
-st.set_page_config(page_title="Multi-Platform GST Auto-Filer Pro", layout="wide", page_icon="🛍️")
-st.title("🛍️ Multi-Platform E-Commerce GST Auto-Filer & Analytics")
+st.set_page_config(page_title="Multi-Platform GST Auto-Filer & Analytics Pro", layout="wide", page_icon="🛍️")
+st.title("🛍️ Multi-Platform E-Commerce GST Auto-Filer & Analytics Pro")
 st.caption("Amazon, Flipkart aur Meesho ki Excel (.xlsx) ya ZIP (.zip) files direct upload karein.")
 
 def safe_float(val, default=0.0):
@@ -80,7 +80,7 @@ def parse_amazon(file_bytes):
                 
                 hsn_records.append({
                     "Platform": "Amazon", "HSN Code": str(r[0]).strip(), "UQC": str(r[2]).strip() if pd.notna(r[2]) else "PCS",
-                    "Qty": qty, "GST Rate": f"{safe_float(r[4])*100:.0f}%", "Taxable (₹)": taxable,
+                    "Qty": qty, "GST Rate": f"{safe_float(r[4])*100:.0f}%", "Rate_Num": safe_float(r[4])*100, "Taxable (₹)": taxable,
                     "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross Total (₹)": gross
                 })
 
@@ -96,7 +96,7 @@ def parse_amazon(file_bytes):
                 cgst = round((taxable * rate) / 2, 2) if is_intra else 0.0
                 sgst = round((taxable * rate) / 2, 2) if is_intra else 0.0
                 b2cs_records.append({
-                    "Platform": "Amazon", "Place of Supply": pos, "Rate": f"{rate*100:.0f}%",
+                    "Platform": "Amazon", "Place of Supply": pos, "Rate": f"{rate*100:.0f}%", "Rate_Num": rate*100,
                     "Taxable Value (₹)": taxable, "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst,
                     "Gross Value (₹)": round(taxable + igst + cgst + sgst, 2)
                 })
@@ -107,13 +107,13 @@ def parse_amazon(file_bytes):
             if len(r) > 11 and pd.notna(r[0]) and str(r[0]).strip() != '':
                 b2b_records.append({
                     "Platform": "Amazon", "Buyer GSTIN": str(r[0]).strip().upper(), "Invoice No": str(r[2]).strip(),
-                    "Date": str(r[3]).strip(), "Place of Supply": str(r[5]).strip(), "Rate": f"{safe_float(r[10])*100:.0f}%",
+                    "Date": str(r[3]).strip(), "Place of Supply": str(r[5]).strip(), "Rate": f"{safe_float(r[10])*100:.0f}%", "Rate_Num": safe_float(r[10])*100,
                     "Taxable Value (₹)": safe_float(r[11]), "Gross / Invoice Value (₹)": safe_float(r[4])
                 })
 
     return {
         "platform": "Amazon", "supplier_gstin": supplier_gstin, "supplier_state": supplier_state,
-        "gross": gross_sum, "taxable": taxable_sum,
+        "gross": gross_sum, "taxable": taxable_sum, "returns_gross": 0.0, "returns_taxable": 0.0,
         "igst": igst_sum, "cgst": cgst_sum, "sgst": sgst_sum,
         "total_tax": igst_sum + cgst_sum + sgst_sum,
         "tcs": round(taxable_sum * 0.005, 2),
@@ -127,6 +127,7 @@ def parse_flipkart(file_bytes):
     taxable_sum, igst_sum, cgst_sum, sgst_sum, gross_sum = 0.0, 0.0, 0.0, 0.0, 0.0
     supplier_gstin = "24ECEPM6676L1Z0"
     supplier_state = "24"
+    returns_taxable = 0.0
 
     if 'Section 12 in GSTR-1' in excel.sheet_names:
         df_hsn = pd.read_excel(file_bytes, sheet_name='Section 12 in GSTR-1')
@@ -150,7 +151,7 @@ def parse_flipkart(file_bytes):
             
             hsn_records.append({
                 "Platform": "Flipkart", "HSN Code": str(r.get('HSN Number', '')).strip(), "UQC": "NOS",
-                "Qty": qty, "GST Rate": "5%", "Taxable (₹)": taxable,
+                "Qty": qty, "GST Rate": "5%", "Rate_Num": 5.0, "Taxable (₹)": taxable,
                 "IGST (₹)": igst, "CGST (₹)": cgst, "SGST (₹)": sgst, "Gross Total (₹)": gross
             })
 
@@ -160,9 +161,10 @@ def parse_flipkart(file_bytes):
             taxable = safe_float(r.get('Aggregate Taxable Value Rs.', 0))
             cgst = safe_float(r.get('CGST Amount Rs.', 0))
             sgst = safe_float(r.get('SGST /UT Amount Rs.', 0))
+            returns_taxable += safe_float(r.get('Taxable Sales Return Value Rs.', 0))
             if taxable > 0:
                 b2cs_records.append({
-                    "Platform": "Flipkart", "Place of Supply": f"{supplier_state}-Gujarat", "Rate": "5%",
+                    "Platform": "Flipkart", "Place of Supply": f"{supplier_state}-Gujarat", "Rate": "5%", "Rate_Num": 5.0,
                     "Taxable Value (₹)": taxable, "IGST (₹)": 0.0, "CGST (₹)": cgst, "SGST (₹)": sgst,
                     "Gross Value (₹)": round(taxable + cgst + sgst, 2)
                 })
@@ -173,9 +175,10 @@ def parse_flipkart(file_bytes):
             taxable = safe_float(r.get('Aggregate Taxable Value Rs.', 0))
             igst = safe_float(r.get('IGST Amount Rs.', 0))
             state = str(r.get('Delivered State (PoS)', '')).strip()
+            returns_taxable += safe_float(r.get('Taxable Sales Return Value Rs.', 0))
             if taxable > 0:
                 b2cs_records.append({
-                    "Platform": "Flipkart", "Place of Supply": state, "Rate": "5%",
+                    "Platform": "Flipkart", "Place of Supply": state, "Rate": "5%", "Rate_Num": 5.0,
                     "Taxable Value (₹)": taxable, "IGST (₹)": igst, "CGST (₹)": 0.0, "SGST (₹)": 0.0,
                     "Gross Value (₹)": round(taxable + igst, 2)
                 })
@@ -187,7 +190,7 @@ def parse_flipkart(file_bytes):
 
     return {
         "platform": "Flipkart", "supplier_gstin": supplier_gstin, "supplier_state": supplier_state,
-        "gross": gross_sum, "taxable": taxable_sum,
+        "gross": gross_sum, "taxable": taxable_sum, "returns_gross": round(returns_taxable * 1.05, 2), "returns_taxable": round(returns_taxable, 2),
         "igst": igst_sum, "cgst": cgst_sum, "sgst": sgst_sum,
         "total_tax": igst_sum + cgst_sum + sgst_sum,
         "tcs": round(tcs_total, 2),
@@ -207,6 +210,9 @@ def parse_meesho_frames(df_sales, df_returns):
         supplier_gstin = str(df_sales['gstin'].iloc[0]).strip().upper()
         supplier_state = supplier_gstin[:2]
     
+    ret_gross = safe_float(df_returns['total_invoice_value'].sum()) if 'total_invoice_value' in df_returns.columns else 0.0
+    ret_taxable = safe_float(df_returns['total_taxable_sale_value'].sum()) if 'total_taxable_sale_value' in df_returns.columns else 0.0
+
     df_sales['sign'] = 1
     df_returns['sign'] = -1
     df_all = pd.concat([df_sales, df_returns], ignore_index=True)
@@ -241,7 +247,7 @@ def parse_meesho_frames(df_sales, df_returns):
         if round(r['net_taxable'], 2) != 0:
             b2cs_records.append({
                 "Platform": "Meesho", "Place of Supply": str(r['end_customer_state_new']).strip().title(),
-                "Rate": f"{r['gst_rate']:.0f}%", "Taxable Value (₹)": round(r['net_taxable'], 2),
+                "Rate": f"{r['gst_rate']:.0f}%", "Rate_Num": float(r['gst_rate']), "Taxable Value (₹)": round(r['net_taxable'], 2),
                 "IGST (₹)": round(r['igst'], 2), "CGST (₹)": round(r['cgst'], 2), "SGST (₹)": round(r['sgst'], 2),
                 "Gross Value (₹)": round(r['net_gross'], 2)
             })
@@ -254,7 +260,7 @@ def parse_meesho_frames(df_sales, df_returns):
     for _, r in hsn_grp.iterrows():
         hsn_records.append({
             "Platform": "Meesho", "HSN Code": str(int(r['hsn_code'])) if pd.notna(r['hsn_code']) else "9999",
-            "UQC": "PCS", "Qty": r['net_qty'], "GST Rate": f"{r['gst_rate']:.0f}%",
+            "UQC": "PCS", "Qty": r['net_qty'], "GST Rate": f"{r['gst_rate']:.0f}%", "Rate_Num": float(r['gst_rate']),
             "Taxable (₹)": round(r['net_taxable'], 2), "IGST (₹)": round(r['igst'], 2),
             "CGST (₹)": round(r['cgst'], 2), "SGST (₹)": round(r['sgst'], 2), "Gross Total (₹)": round(r['net_gross'], 2)
         })
@@ -262,6 +268,7 @@ def parse_meesho_frames(df_sales, df_returns):
     return {
         "platform": "Meesho", "supplier_gstin": supplier_gstin, "supplier_state": supplier_state,
         "gross": round(gross_sum, 2), "taxable": round(taxable_sum, 2),
+        "returns_gross": round(ret_gross, 2), "returns_taxable": round(ret_taxable, 2),
         "igst": round(igst_sum, 2), "cgst": round(cgst_sum, 2), "sgst": round(sgst_sum, 2),
         "total_tax": round(total_tax_sum, 2), "tcs": round(taxable_sum * 0.005, 2),
         "hsn": hsn_records, "b2cs": b2cs_records, "b2b": []
@@ -336,6 +343,7 @@ if uploaded_files:
     combined_sgst = sum(p['sgst'] for p in platform_results)
     combined_total_tax = sum(p['total_tax'] for p in platform_results)
     combined_tcs = sum(p['tcs'] for p in platform_results)
+    total_returns_loss = sum(p['returns_gross'] for p in platform_results)
     
     all_hsn = [item for p in platform_results for item in p['hsn']]
     all_b2cs = [item for p in platform_results for item in p['b2cs']]
@@ -344,7 +352,7 @@ if uploaded_files:
     # Check for negative state sales (GST Portal constraint alert)
     neg_states = [x['Place of Supply'] for x in all_b2cs if x.get('Taxable Value (₹)', 0) < 0]
     if neg_states:
-        st.warning(f"⚠️ **Negative State Sales Alert:** {', '.join(neg_states)} mein is mahine return sales se zyada hain. GST portal par Table 7 mein negative value daalne par error aata hai, isliye is amount ko agle mahine adjust karein ya credit note ke through claim karein.")
+        st.warning(f"⚠️ **Negative State Sales Alert:** {', '.join(neg_states)} mein is mahine return sales se zyada hain. GST portal par Table 7 mein negative value daalne par error aata hai, isliye is amount ko agle mahine adjust karein.")
 
     st.divider()
 
@@ -356,6 +364,7 @@ if uploaded_files:
             "Platform": p['platform'],
             "Gross Sales (₹)": f"₹{p['gross']:,.2f}",
             "Taxable Sales (₹)": f"₹{p['taxable']:,.2f}",
+            "Returns / RTO Value (₹)": f"₹{p['returns_gross']:,.2f}",
             "IGST (₹)": f"₹{p['igst']:,.2f}",
             "CGST (₹)": f"₹{p['cgst']:,.2f}",
             "SGST (₹)": f"₹{p['sgst']:,.2f}",
@@ -375,29 +384,52 @@ if uploaded_files:
     kpi4.metric("Total IGST", f"₹{combined_igst:,.2f}")
     kpi5.metric("Total CGST + SGST", f"₹{(combined_cgst + combined_sgst):,.2f}")
 
-    # 3. GSTR-3B Cash Calculator
+    # 3. GSTR-3B Cash Calculator & TCS Form 27EQ Reconciler
     st.divider()
-    st.subheader("💳 GSTR-3B Final Cash Payment Calculator")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        itc_igst = c1.number_input("Purchase IGST (ITC)", min_value=0.0, value=0.0, step=100.0)
-    with c2:
-        itc_cgst = c2.number_input("Purchase CGST (ITC)", min_value=0.0, value=0.0, step=100.0)
-    with c3:
-        itc_sgst = c3.number_input("Purchase SGST (ITC)", min_value=0.0, value=0.0, step=100.0)
-    with c4:
-        tcs_claim = c4.number_input("Combined TCS Credit", min_value=0.0, value=round(combined_tcs, 2), step=50.0)
+    calc_c1, calc_c2 = st.columns([1.5, 1])
+    with calc_c1:
+        st.subheader("💳 GSTR-3B Final Cash Payment Calculator")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            itc_igst = c1.number_input("Purchase IGST (ITC)", min_value=0.0, value=0.0, step=100.0)
+        with c2:
+            itc_cgst = c2.number_input("Purchase CGST (ITC)", min_value=0.0, value=0.0, step=100.0)
+        with c3:
+            itc_sgst = c3.number_input("Purchase SGST (ITC)", min_value=0.0, value=0.0, step=100.0)
+        with c4:
+            tcs_claim = c4.number_input("Combined TCS Credit", min_value=0.0, value=round(combined_tcs, 2), step=50.0)
 
-    net_igst = max(0.0, combined_igst - itc_igst)
-    net_cgst = max(0.0, combined_cgst - itc_cgst)
-    net_sgst = max(0.0, combined_sgst - itc_sgst)
-    final_cash_tax = max(0.0, (net_igst + net_cgst + net_sgst) - tcs_claim)
+        net_igst = max(0.0, combined_igst - itc_igst)
+        net_cgst = max(0.0, combined_cgst - itc_cgst)
+        net_sgst = max(0.0, combined_sgst - itc_sgst)
+        final_cash_tax = max(0.0, (net_igst + net_cgst + net_sgst) - tcs_claim)
 
-    st.success(f"👉 **Consolidated Net Cash to Pay (GSTR-3B Challan):** ₹{round(final_cash_tax):,} *(IGST: ₹{net_igst:,.2f} | CGST: ₹{net_cgst:,.2f} | SGST: ₹{net_sgst:,.2f})*")
+        st.success(f"👉 **Consolidated Net Cash to Pay (GSTR-3B Challan):** ₹{round(final_cash_tax):,} *(IGST: ₹{net_igst:,.2f} | CGST: ₹{net_cgst:,.2f} | SGST: ₹{net_sgst:,.2f})*")
+
+    with calc_c2:
+        st.subheader("🧾 TCS Form 27EQ Auto-Reconciler")
+        st.info(f"""
+        📌 **GST Portal Action (TDS/TCS Received Tab):**
+        * **Total TCS Deducted by E-Commerce:** ₹{combined_tcs:,.2f}
+        * **Net Cash Saved via TCS:** ₹{round(tcs_claim):,}
+        * *Tip: GST Portal par login karke TDS and TCS credit accept karein taaki cash ledger mein balance add ho sake.*
+        """)
 
     st.divider()
 
-    # 4. GSTR-3B Form Mapping & GSTR-1 Table 14 Mapping
+    # 4. Return & RTO Impact Analytics
+    st.subheader("📦 Return & RTO Impact Analytics")
+    rto_c1, rto_c2 = st.columns([1, 1])
+    with rto_c1:
+        st.metric("Total Returns & RTO Loss (Gross)", f"₹{total_returns_loss:,.2f}")
+        st.caption("E-Commerce returns aur cancellations ki wajah se blocked revenue turnover.")
+    with rto_c2:
+        rto_chart_data = pd.DataFrame([{"Platform": p['platform'], "Returns (₹)": p['returns_gross']} for p in platform_results]).set_index('Platform')
+        st.bar_chart(rto_chart_data)
+
+    st.divider()
+
+    # 5. GSTR-3B & Table 14 Mapping
     map_c1, map_c2 = st.columns([1, 1])
     with map_c1:
         st.subheader("📋 Direct GSTR-3B Portal Form Mapping")
@@ -423,9 +455,9 @@ if uploaded_files:
 
     st.divider()
 
-    # 5. Export Center
-    st.subheader("📥 Export Combined & Platform Reports")
-    d1, d2 = st.columns(2)
+    # 6. Export Center
+    st.subheader("📥 Export Combined Reports & Official Offline Utility Template")
+    d1, d2, d3 = st.columns(3)
     
     # Unified Aggregated DataFrames
     df_hsn_unified = pd.DataFrame(all_hsn)
@@ -440,6 +472,7 @@ if uploaded_files:
             'Taxable Value (₹)': 'sum', 'IGST (₹)': 'sum', 'CGST (₹)': 'sum', 'SGST (₹)': 'sum', 'Gross Value (₹)': 'sum'
         }).reset_index()
 
+    # Export 1: Standard Multi-Sheet Audit Excel
     excel_buf = io.BytesIO()
     with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
         pd.DataFrame(comp_data).to_excel(writer, sheet_name='Platform Summary', index=False)
@@ -455,6 +488,35 @@ if uploaded_files:
     with d1:
         st.download_button("📊 Download Consolidated Excel (CA Audit)", data=excel_buf.getvalue(), file_name="GST_Combined_Platform_Audit.xlsx", use_container_width=True)
 
+    # Export 2: Official GSTR-1 Offline Tool Excel Format
+    offline_excel_buf = io.BytesIO()
+    with pd.ExcelWriter(offline_excel_buf, engine='openpyxl') as writer:
+        # 1. b2cs sheet
+        b2cs_offline_rows = []
+        for x in all_b2cs:
+            b2cs_offline_rows.append({
+                "Type": "OE", "Place of Supply": x.get('Place of Supply', ''),
+                "Applicable % of Tax Rate": "", "Rate": x.get('Rate_Num', 5.0),
+                "Taxable Value": x.get('Taxable Value (₹)', 0.0), "Cess Amount": 0.0
+            })
+        pd.DataFrame(b2cs_offline_rows).to_excel(writer, sheet_name='b2cs', index=False)
+
+        # 2. hsn sheet
+        hsn_offline_rows = []
+        for x in all_hsn:
+            hsn_offline_rows.append({
+                "HSN": x.get('HSN Code', ''), "Description": "Goods", "UQC": x.get('UQC', 'PCS'),
+                "Total Quantity": x.get('Qty', 1.0), "Total Value": x.get('Gross Total (₹)', 0.0),
+                "Taxable Value": x.get('Taxable (₹)', 0.0), "Integrated Tax Amount": x.get('IGST (₹)', 0.0),
+                "Central Tax Amount": x.get('CGST (₹)', 0.0), "State/UT Tax Amount": x.get('SGST (₹)', 0.0),
+                "Cess Amount": 0.0
+            })
+        pd.DataFrame(hsn_offline_rows).to_excel(writer, sheet_name='hsn', index=False)
+
+    with d2:
+        st.download_button("🏛️ Download Official GSTR-1 Offline Template (.xlsx)", data=offline_excel_buf.getvalue(), file_name="GSTR1_Offline_Utility_Import.xlsx", use_container_width=True)
+
+    # Export 3: JSON
     json_payload = {
         "gross_sales": round(combined_gross, 2), "taxable_sales": round(combined_taxable, 2),
         "total_tax": round(combined_total_tax, 2), "igst": round(combined_igst, 2),
@@ -462,12 +524,12 @@ if uploaded_files:
         "platforms": comp_data, "unified_hsn": df_hsn_unified.to_dict(orient='records') if not df_hsn_unified.empty else [],
         "unified_b2cs": df_b2c_unified.to_dict(orient='records') if not df_b2c_unified.empty else []
     }
-    with d2:
+    with d3:
         st.download_button("⚡ Download Combined GSTR-1 JSON", data=json.dumps(json_payload, indent=4).encode('utf-8'), file_name="GSTR1_Combined_Offline.json", mime="application/json", use_container_width=True)
 
     st.divider()
 
-    # 6. Detailed Tables Breakdown
+    # 7. Detailed Tables Breakdown
     st.subheader("📋 Platform-Wise & Combined Detailed Data Breakdown")
     main_tab1, main_tab2, main_tab3 = st.tabs(["📦 HSN Summary (Table 12)", "🛒 B2C State-Wise Sales (Table 7)", "🏬 B2B Invoices (Table 4A)"])
 
