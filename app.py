@@ -4,6 +4,7 @@ import json
 import io
 import re
 import zipfile
+from datetime import datetime
 
 st.set_page_config(page_title="Multi-Platform GST Auto-Filer & Analytics Pro", layout="wide", page_icon="🛍️")
 st.title("🛍️ Multi-Platform E-Commerce GST Auto-Filer & Analytics Pro")
@@ -349,11 +350,6 @@ if uploaded_files:
     all_b2cs = [item for p in platform_results for item in p['b2cs']]
     all_b2b = [item for p in platform_results for item in p['b2b']]
 
-    # Check for negative state sales (GST Portal constraint alert)
-    neg_states = [x['Place of Supply'] for x in all_b2cs if x.get('Taxable Value (₹)', 0) < 0]
-    if neg_states:
-        st.warning(f"⚠️ **Negative State Sales Alert:** {', '.join(neg_states)} mein is mahine return sales se zyada hain. GST portal par Table 7 mein negative value daalne par error aata hai, isliye is amount ko agle mahine adjust karein.")
-
     st.divider()
 
     # 1. Platform Comparison Table
@@ -384,7 +380,7 @@ if uploaded_files:
     kpi4.metric("Total IGST", f"₹{combined_igst:,.2f}")
     kpi5.metric("Total CGST + SGST", f"₹{(combined_cgst + combined_sgst):,.2f}")
 
-    # 3. GSTR-3B Cash Calculator & TCS Form 27EQ Reconciler
+    # 3. GSTR-3B Cash Calculator & Late Fee Estimator
     st.divider()
     calc_c1, calc_c2 = st.columns([1.5, 1])
     with calc_c1:
@@ -407,17 +403,45 @@ if uploaded_files:
         st.success(f"👉 **Consolidated Net Cash to Pay (GSTR-3B Challan):** ₹{round(final_cash_tax):,} *(IGST: ₹{net_igst:,.2f} | CGST: ₹{net_cgst:,.2f} | SGST: ₹{net_sgst:,.2f})*")
 
     with calc_c2:
-        st.subheader("🧾 TCS Form 27EQ Auto-Reconciler")
-        st.info(f"""
-        📌 **GST Portal Action (TDS/TCS Received Tab):**
-        * **Total TCS Deducted by E-Commerce:** ₹{combined_tcs:,.2f}
-        * **Net Cash Saved via TCS:** ₹{round(tcs_claim):,}
-        * *Tip: GST Portal par login karke TDS and TCS credit accept karein taaki cash ledger mein balance add ho sake.*
-        """)
+        st.subheader("⏰ Section 47 Late Fee & Interest Estimator")
+        days_delayed = st.number_input("Days Delayed (After 20th Due Date)", min_value=0, value=0, step=1)
+        late_fee = days_delayed * 50.0 # Rs 50/day standard
+        interest_18 = (final_cash_tax * 0.18 * (days_delayed / 365.0)) if days_delayed > 0 else 0.0
+        
+        if days_delayed > 0:
+            st.warning(f"⚠️ **Estimated Late Fee:** ₹{late_fee:,.2f} | **Interest (18% p.a.):** ₹{interest_18:,.2f}")
+        else:
+            st.info("✅ On-Time Filing: Late Fee ₹0.00 | Interest ₹0.00")
 
     st.divider()
 
-    # 4. Return & RTO Impact Analytics
+    # 4. WhatsApp & Email 1-Click Shareable Summary
+    st.subheader("📲 WhatsApp / Email Ready Filing Summary")
+    wa_summary_text = f"""*GST FILING SUMMARY FOR ACCOUNTANT/CA*
+----------------------------------------
+*Turnover Details:*
+• Gross Turnover: ₹{combined_gross:,.2f}
+• Net Taxable Sales: ₹{combined_taxable:,.2f}
+• Total Output Tax: ₹{combined_total_tax:,.2f}
+  - IGST: ₹{combined_igst:,.2f}
+  - CGST: ₹{combined_cgst:,.2f}
+  - SGST: ₹{combined_sgst:,.2f}
+
+*GSTR-3B Payment Challan:*
+• Total Eligible ITC Claimed: ₹{(itc_igst + itc_cgst + itc_sgst):,.2f}
+• E-Commerce TCS Credit: ₹{tcs_claim:,.2f}
+• *Net Cash Challan Amount: ₹{round(final_cash_tax):,}*
+
+*Platform Split:*
+{chr(10).join([f"• {p['platform']}: Taxable ₹{p['taxable']:,.2f} | Tax ₹{p['total_tax']:,.2f}" for p in platform_results])}
+----------------------------------------
+_Generated via Multi-Platform GST Pro Assistant_"""
+    
+    st.text_area("Copy this text and paste on WhatsApp / Email:", value=wa_summary_text, height=180)
+
+    st.divider()
+
+    # 5. Return & RTO Impact Analytics
     st.subheader("📦 Return & RTO Impact Analytics")
     rto_c1, rto_c2 = st.columns([1, 1])
     with rto_c1:
@@ -429,7 +453,7 @@ if uploaded_files:
 
     st.divider()
 
-    # 5. GSTR-3B & Table 14 Mapping
+    # 6. GSTR-3B & Table 14 Mapping
     map_c1, map_c2 = st.columns([1, 1])
     with map_c1:
         st.subheader("📋 Direct GSTR-3B Portal Form Mapping")
@@ -455,11 +479,10 @@ if uploaded_files:
 
     st.divider()
 
-    # 6. Export Center
+    # 7. Export Center
     st.subheader("📥 Export Combined Reports & Official Offline Utility Template")
     d1, d2, d3 = st.columns(3)
     
-    # Unified Aggregated DataFrames
     df_hsn_unified = pd.DataFrame(all_hsn)
     if not df_hsn_unified.empty:
         df_hsn_unified = df_hsn_unified.groupby(['HSN Code', 'GST Rate']).agg({
@@ -472,7 +495,6 @@ if uploaded_files:
             'Taxable Value (₹)': 'sum', 'IGST (₹)': 'sum', 'CGST (₹)': 'sum', 'SGST (₹)': 'sum', 'Gross Value (₹)': 'sum'
         }).reset_index()
 
-    # Export 1: Standard Multi-Sheet Audit Excel
     excel_buf = io.BytesIO()
     with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
         pd.DataFrame(comp_data).to_excel(writer, sheet_name='Platform Summary', index=False)
@@ -488,10 +510,8 @@ if uploaded_files:
     with d1:
         st.download_button("📊 Download Consolidated Excel (CA Audit)", data=excel_buf.getvalue(), file_name="GST_Combined_Platform_Audit.xlsx", use_container_width=True)
 
-    # Export 2: Official GSTR-1 Offline Tool Excel Format
     offline_excel_buf = io.BytesIO()
     with pd.ExcelWriter(offline_excel_buf, engine='openpyxl') as writer:
-        # 1. b2cs sheet
         b2cs_offline_rows = []
         for x in all_b2cs:
             b2cs_offline_rows.append({
@@ -501,7 +521,6 @@ if uploaded_files:
             })
         pd.DataFrame(b2cs_offline_rows).to_excel(writer, sheet_name='b2cs', index=False)
 
-        # 2. hsn sheet
         hsn_offline_rows = []
         for x in all_hsn:
             hsn_offline_rows.append({
@@ -516,7 +535,6 @@ if uploaded_files:
     with d2:
         st.download_button("🏛️ Download Official GSTR-1 Offline Template (.xlsx)", data=offline_excel_buf.getvalue(), file_name="GSTR1_Offline_Utility_Import.xlsx", use_container_width=True)
 
-    # Export 3: JSON
     json_payload = {
         "gross_sales": round(combined_gross, 2), "taxable_sales": round(combined_taxable, 2),
         "total_tax": round(combined_total_tax, 2), "igst": round(combined_igst, 2),
@@ -529,7 +547,7 @@ if uploaded_files:
 
     st.divider()
 
-    # 7. Detailed Tables Breakdown
+    # 8. Detailed Tables Breakdown
     st.subheader("📋 Platform-Wise & Combined Detailed Data Breakdown")
     main_tab1, main_tab2, main_tab3 = st.tabs(["📦 HSN Summary (Table 12)", "🛒 B2C State-Wise Sales (Table 7)", "🏬 B2B Invoices (Table 4A)"])
 
@@ -537,7 +555,6 @@ if uploaded_files:
         st.write("### HSN Wise Breakdown")
         hsn_sub_tabs = st.tabs(["🌟 Unified Aggregated HSN (Portal Ready)", "🌐 Raw Combined HSN", "🟧 Amazon HSN", "🟦 Flipkart HSN", "🟪 Meesho HSN"])
         with hsn_sub_tabs[0]:
-            st.caption("✨ Same HSN codes merged across platforms (Direct GST Portal Table 12 format):")
             st.dataframe(df_hsn_unified if not df_hsn_unified.empty else pd.DataFrame(), use_container_width=True)
         with hsn_sub_tabs[1]:
             st.dataframe(pd.DataFrame(all_hsn) if all_hsn else pd.DataFrame(), use_container_width=True)
@@ -555,7 +572,6 @@ if uploaded_files:
         st.write("### B2C State-Wise Sales Breakdown")
         b2c_sub_tabs = st.tabs(["🌟 Unified Aggregated States (Portal Ready)", "🌐 Raw Combined B2C", "🟧 Amazon B2C", "🟦 Flipkart B2C", "🟪 Meesho B2C"])
         with b2c_sub_tabs[0]:
-            st.caption("✨ Same State sales merged across platforms (Direct GST Portal Table 7 format):")
             st.dataframe(df_b2c_unified if not df_b2c_unified.empty else pd.DataFrame(), use_container_width=True)
         with b2c_sub_tabs[1]:
             st.dataframe(pd.DataFrame(all_b2cs) if all_b2cs else pd.DataFrame(), use_container_width=True)
