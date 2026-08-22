@@ -112,7 +112,7 @@ def parse_amazon(file_bytes):
                 })
 
     return {
-        "platform": "Amazon", "supplier_gstin": supplier_gstin,
+        "platform": "Amazon", "supplier_gstin": supplier_gstin, "supplier_state": supplier_state,
         "gross": gross_sum, "taxable": taxable_sum,
         "igst": igst_sum, "cgst": cgst_sum, "sgst": sgst_sum,
         "total_tax": igst_sum + cgst_sum + sgst_sum,
@@ -126,9 +126,14 @@ def parse_flipkart(file_bytes):
     hsn_records, b2cs_records, b2b_records = [], [], []
     taxable_sum, igst_sum, cgst_sum, sgst_sum, gross_sum = 0.0, 0.0, 0.0, 0.0, 0.0
     supplier_gstin = "24ECEPM6676L1Z0"
+    supplier_state = "24"
 
     if 'Section 12 in GSTR-1' in excel.sheet_names:
         df_hsn = pd.read_excel(file_bytes, sheet_name='Section 12 in GSTR-1')
+        if not df_hsn.empty and 'GSTIN' in df_hsn.columns and pd.notna(df_hsn['GSTIN'].iloc[0]):
+            supplier_gstin = str(df_hsn['GSTIN'].iloc[0]).strip().upper()
+            supplier_state = supplier_gstin[:2]
+
         for _, r in df_hsn.iterrows():
             qty = safe_float(r.get('Total Quantity in Nos.', 0))
             gross = safe_float(r.get('Total\n Value Rs.', 0))
@@ -157,7 +162,7 @@ def parse_flipkart(file_bytes):
             sgst = safe_float(r.get('SGST /UT Amount Rs.', 0))
             if taxable > 0:
                 b2cs_records.append({
-                    "Platform": "Flipkart", "Place of Supply": "24-Gujarat", "Rate": "5%",
+                    "Platform": "Flipkart", "Place of Supply": f"{supplier_state}-Gujarat", "Rate": "5%",
                     "Taxable Value (₹)": taxable, "IGST (₹)": 0.0, "CGST (₹)": cgst, "SGST (₹)": sgst,
                     "Gross Value (₹)": round(taxable + cgst + sgst, 2)
                 })
@@ -181,7 +186,7 @@ def parse_flipkart(file_bytes):
         tcs_total = safe_float(df_tcs['TCS IGST amount Rs.'].sum()) + safe_float(df_tcs['TCS CGST amount Rs.'].sum()) + safe_float(df_tcs['TCS SGST amount Rs.'].sum())
 
     return {
-        "platform": "Flipkart", "supplier_gstin": supplier_gstin,
+        "platform": "Flipkart", "supplier_gstin": supplier_gstin, "supplier_state": supplier_state,
         "gross": gross_sum, "taxable": taxable_sum,
         "igst": igst_sum, "cgst": cgst_sum, "sgst": sgst_sum,
         "total_tax": igst_sum + cgst_sum + sgst_sum,
@@ -196,6 +201,12 @@ def parse_meesho_frames(df_sales, df_returns):
     df_sales.columns = [c.strip().lower() for c in df_sales.columns]
     df_returns.columns = [c.strip().lower() for c in df_returns.columns]
     
+    supplier_gstin = "24ECEPM6676L1Z0"
+    supplier_state = "24"
+    if 'gstin' in df_sales.columns and not df_sales.empty:
+        supplier_gstin = str(df_sales['gstin'].iloc[0]).strip().upper()
+        supplier_state = supplier_gstin[:2]
+    
     df_sales['sign'] = 1
     df_returns['sign'] = -1
     df_all = pd.concat([df_sales, df_returns], ignore_index=True)
@@ -205,11 +216,11 @@ def parse_meesho_frames(df_sales, df_returns):
     df_all['net_tax'] = df_all['tax_amount'] * df_all['sign']
     df_all['net_qty'] = df_all['quantity'] * df_all['sign']
     
-    def is_gujarat(state_val):
+    def is_intra_state(state_val):
         s = str(state_val).strip().upper()
-        return s == 'GUJARAT' or s.startswith('24') or s == 'IN-GJ' or s == 'GJ'
+        return s.startswith(supplier_state) or s == 'GUJARAT' or s == 'IN-GJ'
     
-    df_all['is_intra'] = df_all['end_customer_state_new'].apply(is_gujarat)
+    df_all['is_intra'] = df_all['end_customer_state_new'].apply(is_intra_state)
     df_all['igst'] = df_all.apply(lambda r: 0.0 if r['is_intra'] else r['net_tax'], axis=1)
     df_all['cgst'] = df_all.apply(lambda r: (r['net_tax'] / 2.0) if r['is_intra'] else 0.0, axis=1)
     df_all['sgst'] = df_all.apply(lambda r: (r['net_tax'] / 2.0) if r['is_intra'] else 0.0, axis=1)
@@ -249,7 +260,7 @@ def parse_meesho_frames(df_sales, df_returns):
         })
         
     return {
-        "platform": "Meesho", "supplier_gstin": "24ECEPM6676L1Z0",
+        "platform": "Meesho", "supplier_gstin": supplier_gstin, "supplier_state": supplier_state,
         "gross": round(gross_sum, 2), "taxable": round(taxable_sum, 2),
         "igst": round(igst_sum, 2), "cgst": round(cgst_sum, 2), "sgst": round(sgst_sum, 2),
         "total_tax": round(total_tax_sum, 2), "tcs": round(taxable_sum * 0.005, 2),
@@ -269,13 +280,12 @@ if uploaded_files:
     for file_obj in uploaded_files:
         file_name = file_obj.name
         
-        # 1. ZIP File Processing (Amazon / Meesho / Flipkart)
+        # 1. ZIP File Processing
         if file_name.lower().endswith('.zip'):
             try:
                 with zipfile.ZipFile(file_obj) as z:
                     extracted_names = [n for n in z.namelist() if n.endswith(('.xlsx', '.xls', '.csv')) and not n.startswith('__MACOSX/')]
                     
-                    # Case A: Meesho ZIP with separate sales & return
                     if any('tcs_sales' in n for n in extracted_names):
                         sales_name = next(n for n in extracted_names if 'tcs_sales.' in n or n.endswith('tcs_sales.xlsx'))
                         returns_name = next((n for n in extracted_names if 'tcs_sales_return' in n), None)
@@ -286,7 +296,6 @@ if uploaded_files:
                         st.success(f"📦 **ZIP File:** `{file_name}` ➔ **Identified Platform:** **🟪 Meesho** (Net Sales Processed)")
                         platform_results.append(parse_meesho_frames(df_s, df_r))
                     else:
-                        # Case B: Amazon ZIP or other Platform ZIP
                         for inner_filename in extracted_names:
                             inner_bytes = io.BytesIO(z.read(inner_filename))
                             p_id, p_badge = detect_ecommerce_platform(inner_bytes, inner_filename)
@@ -303,7 +312,7 @@ if uploaded_files:
             except Exception as e:
                 st.error(f"Error unzipping {file_name}: {e}")
         else:
-            # 2. Standalone Excel / CSV
+            # 2. Standalone Files
             try:
                 p_id, p_badge = detect_ecommerce_platform(file_obj, file_name)
                 file_obj.seek(0)
@@ -331,6 +340,11 @@ if uploaded_files:
     all_hsn = [item for p in platform_results for item in p['hsn']]
     all_b2cs = [item for p in platform_results for item in p['b2cs']]
     all_b2b = [item for p in platform_results for item in p['b2b']]
+
+    # Check for negative state sales (GST Portal constraint alert)
+    neg_states = [x['Place of Supply'] for x in all_b2cs if x.get('Taxable Value (₹)', 0) < 0]
+    if neg_states:
+        st.warning(f"⚠️ **Negative State Sales Alert:** {', '.join(neg_states)} mein is mahine return sales se zyada hain. GST portal par Table 7 mein negative value daalne par error aata hai, isliye is amount ko agle mahine adjust karein ya credit note ke through claim karein.")
 
     st.divider()
 
@@ -383,14 +397,29 @@ if uploaded_files:
 
     st.divider()
 
-    # 4. GSTR-3B Form Mapping
-    st.subheader("📋 Direct GSTR-3B Portal Form Mapping")
-    gstr3b_table = [
-        {"GST Portal Section": "Table 3.1(a) Outward Taxable Supplies", "Taxable Value (₹)": f"₹{combined_taxable:,.2f}", "IGST (₹)": f"₹{combined_igst:,.2f}", "CGST (₹)": f"₹{combined_cgst:,.2f}", "SGST (₹)": f"₹{combined_sgst:,.2f}"},
-        {"GST Portal Section": "Table 4(A)(5) All Other Eligible ITC", "Taxable Value (₹)": "-", "IGST (₹)": f"₹{itc_igst:,.2f}", "CGST (₹)": f"₹{itc_cgst:,.2f}", "SGST (₹)": f"₹{itc_sgst:,.2f}"},
-        {"GST Portal Section": "Table 6.1 Payment of Tax (Net Cash)", "Taxable Value (₹)": "-", "IGST (₹)": f"₹{net_igst:,.2f}", "CGST (₹)": f"₹{net_cgst:,.2f}", "SGST (₹)": f"₹{net_sgst:,.2f}"}
-    ]
-    st.table(pd.DataFrame(gstr3b_table))
+    # 4. GSTR-3B Form Mapping & GSTR-1 Table 14 Mapping
+    map_c1, map_c2 = st.columns([1, 1])
+    with map_c1:
+        st.subheader("📋 Direct GSTR-3B Portal Form Mapping")
+        gstr3b_table = [
+            {"GST Portal Section": "Table 3.1(a) Outward Taxable Supplies", "Taxable Value (₹)": f"₹{combined_taxable:,.2f}", "IGST (₹)": f"₹{combined_igst:,.2f}", "CGST (₹)": f"₹{combined_cgst:,.2f}", "SGST (₹)": f"₹{combined_sgst:,.2f}"},
+            {"GST Portal Section": "Table 4(A)(5) All Other Eligible ITC", "Taxable Value (₹)": "-", "IGST (₹)": f"₹{itc_igst:,.2f}", "CGST (₹)": f"₹{itc_cgst:,.2f}", "SGST (₹)": f"₹{itc_sgst:,.2f}"},
+            {"GST Portal Section": "Table 6.1 Payment of Tax (Net Cash)", "Taxable Value (₹)": "-", "IGST (₹)": f"₹{net_igst:,.2f}", "CGST (₹)": f"₹{net_cgst:,.2f}", "SGST (₹)": f"₹{net_sgst:,.2f}"}
+        ]
+        st.table(pd.DataFrame(gstr3b_table))
+
+    with map_c2:
+        st.subheader("🏬 GSTR-1 Table 14 (Supplies via ECO - Sec 52)")
+        eco_table = []
+        for p in platform_results:
+            eco_table.append({
+                "E-Commerce Platform": p['platform'],
+                "Net Taxable Value (₹)": f"₹{p['taxable']:,.2f}",
+                "IGST (₹)": f"₹{p['igst']:,.2f}",
+                "CGST (₹)": f"₹{p['cgst']:,.2f}",
+                "SGST (₹)": f"₹{p['sgst']:,.2f}"
+            })
+        st.table(pd.DataFrame(eco_table))
 
     st.divider()
 
@@ -398,11 +427,28 @@ if uploaded_files:
     st.subheader("📥 Export Combined & Platform Reports")
     d1, d2 = st.columns(2)
     
+    # Unified Aggregated DataFrames
+    df_hsn_unified = pd.DataFrame(all_hsn)
+    if not df_hsn_unified.empty:
+        df_hsn_unified = df_hsn_unified.groupby(['HSN Code', 'GST Rate']).agg({
+            'Qty': 'sum', 'Taxable (₹)': 'sum', 'IGST (₹)': 'sum', 'CGST (₹)': 'sum', 'SGST (₹)': 'sum', 'Gross Total (₹)': 'sum'
+        }).reset_index()
+
+    df_b2c_unified = pd.DataFrame(all_b2cs)
+    if not df_b2c_unified.empty:
+        df_b2c_unified = df_b2c_unified.groupby(['Place of Supply', 'Rate']).agg({
+            'Taxable Value (₹)': 'sum', 'IGST (₹)': 'sum', 'CGST (₹)': 'sum', 'SGST (₹)': 'sum', 'Gross Value (₹)': 'sum'
+        }).reset_index()
+
     excel_buf = io.BytesIO()
     with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
         pd.DataFrame(comp_data).to_excel(writer, sheet_name='Platform Summary', index=False)
-        pd.DataFrame(all_hsn).to_excel(writer, sheet_name='Combined HSN', index=False)
-        pd.DataFrame(all_b2cs).to_excel(writer, sheet_name='Combined B2C', index=False)
+        if not df_hsn_unified.empty:
+            df_hsn_unified.to_excel(writer, sheet_name='Unified HSN Table 12', index=False)
+        if not df_b2c_unified.empty:
+            df_b2c_unified.to_excel(writer, sheet_name='Unified B2C Table 7', index=False)
+        pd.DataFrame(all_hsn).to_excel(writer, sheet_name='Raw Combined HSN', index=False)
+        pd.DataFrame(all_b2cs).to_excel(writer, sheet_name='Raw Combined B2C', index=False)
         if all_b2b:
             pd.DataFrame(all_b2b).to_excel(writer, sheet_name='B2B Invoices', index=False)
             
@@ -413,7 +459,8 @@ if uploaded_files:
         "gross_sales": round(combined_gross, 2), "taxable_sales": round(combined_taxable, 2),
         "total_tax": round(combined_total_tax, 2), "igst": round(combined_igst, 2),
         "cgst": round(combined_cgst, 2), "sgst": round(combined_sgst, 2),
-        "platforms": comp_data, "hsn": all_hsn, "b2cs": all_b2cs
+        "platforms": comp_data, "unified_hsn": df_hsn_unified.to_dict(orient='records') if not df_hsn_unified.empty else [],
+        "unified_b2cs": df_b2c_unified.to_dict(orient='records') if not df_b2c_unified.empty else []
     }
     with d2:
         st.download_button("⚡ Download Combined GSTR-1 JSON", data=json.dumps(json_payload, indent=4).encode('utf-8'), file_name="GSTR1_Combined_Offline.json", mime="application/json", use_container_width=True)
@@ -422,35 +469,41 @@ if uploaded_files:
 
     # 6. Detailed Tables Breakdown
     st.subheader("📋 Platform-Wise & Combined Detailed Data Breakdown")
-    main_tab1, main_tab2, main_tab3 = st.tabs(["📦 HSN Summary", "🛒 B2C State-Wise Sales", "🏬 B2B Invoices"])
+    main_tab1, main_tab2, main_tab3 = st.tabs(["📦 HSN Summary (Table 12)", "🛒 B2C State-Wise Sales (Table 7)", "🏬 B2B Invoices (Table 4A)"])
 
     with main_tab1:
         st.write("### HSN Wise Breakdown")
-        hsn_sub_tabs = st.tabs(["🌐 Combined HSN", "🟧 Amazon HSN", "🟦 Flipkart HSN", "🟪 Meesho HSN"])
+        hsn_sub_tabs = st.tabs(["🌟 Unified Aggregated HSN (Portal Ready)", "🌐 Raw Combined HSN", "🟧 Amazon HSN", "🟦 Flipkart HSN", "🟪 Meesho HSN"])
         with hsn_sub_tabs[0]:
-            st.dataframe(pd.DataFrame(all_hsn) if all_hsn else pd.DataFrame(), use_container_width=True)
+            st.caption("✨ Same HSN codes merged across platforms (Direct GST Portal Table 12 format):")
+            st.dataframe(df_hsn_unified if not df_hsn_unified.empty else pd.DataFrame(), use_container_width=True)
         with hsn_sub_tabs[1]:
+            st.dataframe(pd.DataFrame(all_hsn) if all_hsn else pd.DataFrame(), use_container_width=True)
+        with hsn_sub_tabs[2]:
             amz_hsn = [x for x in all_hsn if x.get("Platform") == "Amazon"]
             st.dataframe(pd.DataFrame(amz_hsn) if amz_hsn else pd.DataFrame(), use_container_width=True)
-        with hsn_sub_tabs[2]:
+        with hsn_sub_tabs[3]:
             fk_hsn = [x for x in all_hsn if x.get("Platform") == "Flipkart"]
             st.dataframe(pd.DataFrame(fk_hsn) if fk_hsn else pd.DataFrame(), use_container_width=True)
-        with hsn_sub_tabs[3]:
+        with hsn_sub_tabs[4]:
             meesho_hsn = [x for x in all_hsn if x.get("Platform") == "Meesho"]
             st.dataframe(pd.DataFrame(meesho_hsn) if meesho_hsn else pd.DataFrame(), use_container_width=True)
 
     with main_tab2:
         st.write("### B2C State-Wise Sales Breakdown")
-        b2c_sub_tabs = st.tabs(["🌐 Combined B2C", "🟧 Amazon B2C", "🟦 Flipkart B2C", "🟪 Meesho B2C"])
+        b2c_sub_tabs = st.tabs(["🌟 Unified Aggregated States (Portal Ready)", "🌐 Raw Combined B2C", "🟧 Amazon B2C", "🟦 Flipkart B2C", "🟪 Meesho B2C"])
         with b2c_sub_tabs[0]:
-            st.dataframe(pd.DataFrame(all_b2cs) if all_b2cs else pd.DataFrame(), use_container_width=True)
+            st.caption("✨ Same State sales merged across platforms (Direct GST Portal Table 7 format):")
+            st.dataframe(df_b2c_unified if not df_b2c_unified.empty else pd.DataFrame(), use_container_width=True)
         with b2c_sub_tabs[1]:
+            st.dataframe(pd.DataFrame(all_b2cs) if all_b2cs else pd.DataFrame(), use_container_width=True)
+        with b2c_sub_tabs[2]:
             amz_b2cs = [x for x in all_b2cs if x.get("Platform") == "Amazon"]
             st.dataframe(pd.DataFrame(amz_b2cs) if amz_b2cs else pd.DataFrame(), use_container_width=True)
-        with b2c_sub_tabs[2]:
+        with b2c_sub_tabs[3]:
             fk_b2cs = [x for x in all_b2cs if x.get("Platform") == "Flipkart"]
             st.dataframe(pd.DataFrame(fk_b2cs) if fk_b2cs else pd.DataFrame(), use_container_width=True)
-        with b2c_sub_tabs[3]:
+        with b2c_sub_tabs[4]:
             meesho_b2cs = [x for x in all_b2cs if x.get("Platform") == "Meesho"]
             st.dataframe(pd.DataFrame(meesho_b2cs) if meesho_b2cs else pd.DataFrame(), use_container_width=True)
 
